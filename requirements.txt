@@ -1,0 +1,4 @@
+anthropic==0.28.0
+apscheduler==3.10.4
+cerebras-cloud-sdk
+python-dotenv==1.0.0

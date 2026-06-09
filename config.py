@@ -36,6 +36,8 @@ ARCHIVE_DIR = Path(os.getenv("ARCHIVE_DIR", "./agent_data/archive"))
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+RUNTIME_DIR = MEMORY_DIR / "runtime"
+RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
 # File paths
 MEMORY_FILE = MEMORY_DIR / "memory.md"
@@ -46,6 +48,16 @@ SOCIAL_NEEDS_FILE = MEMORY_DIR / "social_needs.json"
 TASK_LOG_FILE = MEMORY_DIR / "task_log.json"
 ERROR_LOG_FILE = LOG_DIR / "errors.log"
 EXECUTION_LOG_FILE = LOG_DIR / "execution.log"
+LONG_TERM_GOALS_FILE = MEMORY_DIR / "long_term_goals.md"
+AUTONOMY_QUEUE_FILE = MEMORY_DIR / "autonomy_queue.jsonl"
+AUTONOMY_LOCK_FILE = RUNTIME_DIR / "autonomy.lock"
+
+# XMCP / X MCP configuration
+XMCP_ENABLED = os.getenv("XMCP_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+XMCP_AUTO_INSTALL = os.getenv("XMCP_AUTO_INSTALL", "true").strip().lower() in {"1", "true", "yes", "on"}
+XMCP_SERVER_URL = os.getenv("XMCP_SERVER_URL", "http://127.0.0.1:8000/mcp")
+XMCP_REPO_URL = os.getenv("XMCP_REPO_URL", "https://github.com/xdevplatform/xmcp")
+XMCP_DIR = Path(os.getenv("XMCP_DIR", str(MEMORY_DIR / "vendor" / "xmcp")))
 
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

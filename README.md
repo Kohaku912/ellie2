@@ -12,6 +12,8 @@ Ellie2 is a local Japanese AI agent that can run as a daemon or answer a direct 
 - Today's memory and selected long-term memory
 - Separate self-model files for stable identity and current self-state
 - Social need homeostasis with dynamic prompt injection
+- XMCP / X(Twitter) MCP tool integration when credentials are configured
+- Long-running self-call queue for autonomous follow-ups and goals
 - Local Web dashboard with read-only state view and AI chat
 - Markdown audit logs for AI calls and Tool calls
 
@@ -46,6 +48,8 @@ Get-Content instruction.txt | .\.venv\Scripts\python run_ai.py --stdin
 
 The daemon starts the scheduler, keeps the PC Tool WebSocket bridge available, runs periodic autonomous checks, and resets daily memory.
 
+It also starts the autonomy runtime, which processes `agent_data/autonomy_queue.jsonl` so Ellie can schedule future self-calls.
+
 ## Web Dashboard
 
 ```powershell
@@ -60,6 +64,20 @@ Optional environment variables:
 WEB_HOST=127.0.0.1
 WEB_PORT=8080
 ```
+
+The Web server also starts the autonomy runtime. If `main.py` is already running, `agent_data/runtime/autonomy.lock` prevents a second worker from processing the same queue.
+
+## XMCP / X MCP
+
+XMCP uses the official `xdevplatform/xmcp` server. Configure the X credentials in `agent_data/vendor/xmcp/.env`:
+
+```text
+X_OAUTH_CONSUMER_KEY=...
+X_OAUTH_CONSUMER_SECRET=...
+X_BEARER_TOKEN=...
+```
+
+With `XMCP_ENABLED=true`, Ellie auto-installs/starts XMCP when credentials exist, exposes tools as `xmcp__...`, and allows all XMCP tool calls in direct and autonomous runs.
 
 ## PC Tool Bridge
 
@@ -107,6 +125,8 @@ The PC side should respond with:
 - `agent/memory.py`: today's memory and long-term memory
 - `agent/self_model.py`: self-model and current self-state
 - `agent/social_needs.py`: social need state and dynamic prompt injection
+- `agent/mcp_client.py`: XMCP install/start and HTTP MCP tool client
+- `agent/autonomy_runtime.py`: self-call queue and long-term goals
 - `agent/audit_log.py`: human-readable audit logging
 - `scheduler/scheduler.py`: periodic jobs
 
@@ -117,6 +137,8 @@ The PC side should respond with:
 - `agent_data/self.md`: stable self-model
 - `agent_data/state.md`: current self-state
 - `agent_data/social_needs.json`: internal social need state
+- `agent_data/autonomy_queue.jsonl`: scheduled self-calls
+- `agent_data/long_term_goals.md`: long-term autonomous goals
 - `agent_data/logs/`: audit and runtime logs
 - `agent_data/archive/`: archived daily memory
 

@@ -194,6 +194,9 @@ def build_tool_context(
         result = tool_call.result or {}
         outbound = result.get("tool_call") if isinstance(result, dict) else None
         if not isinstance(outbound, dict):
+            if isinstance(result, dict):
+                context_blocks.append(_format_local_tool_context(tool_call.name, tool_call.arguments, result))
+                _apply_local_tool_social_recovery(social_needs, tool_call.name, result)
             continue
 
         resolved_context = _resolve_discord_tool_dependencies(
@@ -208,6 +211,7 @@ def build_tool_context(
             continue
 
         bridge_result = send_audited_pc_tool_call(outbound, timeout_seconds=60)
+        _apply_pc_tool_social_recovery(social_needs, str(outbound.get("tool") or tool_call.name), bridge_result)
         context_blocks.append(
             _format_pc_tool_context(
                 instruction_text,
@@ -218,6 +222,52 @@ def build_tool_context(
         )
 
     return "\n\n".join(block for block in context_blocks if block).strip()
+
+
+def _format_local_tool_context(tool_name: str, arguments: JsonDict, result: JsonDict) -> str:
+    return "\n".join(
+        [
+            f"## Local Tool Result: {tool_name}",
+            f"tool: {tool_name}",
+            f"arguments: {json.dumps(arguments, ensure_ascii=False, default=str)}",
+            f"used_result: {json.dumps(result, ensure_ascii=False, default=str)}",
+        ]
+    )
+
+
+def _apply_local_tool_social_recovery(social_needs: Any | None, tool_name: str, result: JsonDict) -> None:
+    if social_needs is None:
+        return
+    status = str(result.get("status") or "").strip().casefold()
+    if status != "completed":
+        return
+    if tool_name.startswith("xmcp__"):
+        social_needs.apply_activity_event("new_external_data", tool_names=[tool_name], success=True)
+        lowered_tool = tool_name.casefold()
+        if any(word in lowered_tool for word in ("notification", "mention", "like", "retweet", "quote", "reply")):
+            social_needs.apply_activity_event("social_feedback", tool_names=[tool_name], success=True)
+        if any(word in lowered_tool for word in ("create", "post", "tweet")):
+            social_needs.apply_activity_event("creative_expression", tool_names=[tool_name], success=True)
+        return
+    if tool_name == "web_search":
+        social_needs.apply_activity_event("new_external_data", tool_names=[tool_name], success=True)
+    elif tool_name == "creative_expression":
+        social_needs.apply_activity_event("creative_expression", tool_names=[tool_name], success=True)
+    elif tool_name == "self_development":
+        action = str(result.get("action") or "").strip().casefold()
+        if action in {"verify", "write_file"}:
+            social_needs.apply_activity_event("self_development_success", tool_names=[tool_name], success=True)
+        else:
+            social_needs.apply_activity_event("self_development_inspect", tool_names=[tool_name], success=True)
+    elif tool_name == "social_feedback_check":
+        social_needs.apply_activity_event("social_feedback", tool_names=[tool_name], success=True)
+
+
+def _apply_pc_tool_social_recovery(social_needs: Any | None, tool_name: str, bridge_result: Any) -> None:
+    if social_needs is None or not getattr(bridge_result, "ok", False):
+        return
+    if tool_name in {"twitter_get_notifications", "twitter_get_mentions", "x_get_notifications", "x_get_mentions"}:
+        social_needs.apply_activity_event("social_feedback", tool_names=[tool_name], success=True)
 
 
 def _forced_pc_tool_call(instruction_text: str) -> JsonDict | None:

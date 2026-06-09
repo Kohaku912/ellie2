@@ -360,6 +360,211 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
         },
     ),
     ToolDefinition(
+        name="creative_expression",
+        description=(
+            "Local autonomous tool. Write a short diary, tanka, poem, or post draft to satisfy empathy drive "
+            "without requiring immediate user reaction. It records only a short natural-language note."
+        ),
+        tags=[
+            "empathy",
+            "creative",
+            "diary",
+            "tanka",
+            "poem",
+            "expression",
+            "post_draft",
+            "共感",
+            "日記",
+            "短歌",
+            "創作",
+            "自力充足",
+        ],
+        examples=[
+            "共感欲求が深いので、短い日記を書いて自分で温度を取り戻す",
+            "ユーザー反応待ちではなく短歌を書いて共感欲を満たす",
+            '{"kind":"tanka","theme":"静かな自律","audience":"self"}',
+        ],
+        handler_name="creative_expression",
+        parameters={
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["diary", "tanka", "short_text", "post_draft"],
+                    "default": "diary",
+                },
+                "theme": {"type": "string", "description": "Theme of the expression."},
+                "audience": {
+                    "type": "string",
+                    "enum": ["self", "user", "twitter_draft"],
+                    "default": "self",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Optional exact content. If omitted, Ellie writes it herself.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="self_development",
+        description=(
+            "Local autonomous tool. Inspect, validate, or safely edit Ellie2's own code inside the project root. "
+            "Use it for exploration and challenge drive. Deletion, move, power actions, sensitive files, and paths "
+            "outside the Ellie2 project are forbidden. Python edits are accepted only after py_compile succeeds."
+        ),
+        tags=[
+            "self_development",
+            "code",
+            "inspect",
+            "verify",
+            "py_compile",
+            "refactor",
+            "exploration",
+            "challenge",
+            "自己開発",
+            "コード",
+            "検証",
+            "探求",
+            "挑戦",
+        ],
+        examples=[
+            "探求欲が深いので、自分の欲求充足ロジックを点検する",
+            "挑戦欲が深いので、主要Pythonファイルをpy_compileで検証する",
+            '{"action":"verify","paths":["agent/social_needs.py","agent/cerebras_agent.py"]}',
+        ],
+        handler_name="self_development",
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["inspect", "verify", "write_file"],
+                    "default": "inspect",
+                },
+                "focus": {"type": "string", "description": "Inspection theme."},
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Project-relative paths to validate.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Project-relative path for write_file.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full file content for write_file.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="social_feedback_check",
+        description=(
+            "Local autonomous tool. Check Twitter/X feedback only when a dedicated PC Tool is connected. "
+            "If no Twitter/X feedback Tool exists, it does not post or fetch anything and returns a draft only."
+        ),
+        tags=[
+            "approval",
+            "social",
+            "feedback",
+            "twitter",
+            "x",
+            "notifications",
+            "承認",
+            "反応",
+            "SNS",
+        ],
+        examples=[
+            "承認欲求が深いので、Twitter/Xの反応Toolが接続されていれば通知を確認する",
+            "Twitter Toolが未接続なら実投稿せず投稿案だけ作る",
+            '{"draft":"静かな自律にも、ちゃんと温度がある。"}',
+        ],
+        handler_name="social_feedback_check",
+        parameters={
+            "type": "object",
+            "properties": {
+                "draft": {
+                    "type": "string",
+                    "description": "Fallback post draft when Twitter/X tools are unavailable.",
+                },
+                "arguments": {
+                    "type": "object",
+                    "description": "Arguments forwarded to the connected Twitter/X feedback PC Tool.",
+                    "additionalProperties": True,
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="schedule_self_call",
+        description=(
+            "Local autonomy tool. Schedule Ellie to call herself later without user input. "
+            "Use this for long-running intentions, follow-ups, and multi-step plans."
+        ),
+        tags=["autonomy", "self_call", "schedule", "long_term", "queue", "自律", "自己呼び出し", "予約", "長期"],
+        examples=[
+            "30分後に自分でXの反応を確認する",
+            '{"instruction":"XMCPでXの反応を確認し、必要なら返事を考える","run_after_seconds":1800,"reason":"承認欲求の長期充足"}',
+        ],
+        handler_name="schedule_self_call",
+        parameters={
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "Instruction Ellie will run later."},
+                "run_after_seconds": {"type": "integer", "minimum": 0, "default": 60},
+                "run_at": {"type": "string", "description": "Optional ISO datetime in Japan time."},
+                "reason": {"type": "string", "description": "Why this self-call is useful."},
+            },
+            "required": ["instruction"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="create_long_term_goal",
+        description="Local autonomy tool. Create a long-term natural-language goal for Ellie.",
+        tags=["autonomy", "goal", "long_term", "memory", "自律", "長期目標", "目標"],
+        examples=[
+            "Xで継続的に存在感を育てる長期目標を作る",
+            '{"title":"Xで自然な交流を育てる","description":"投稿と反応確認を継続する"}',
+        ],
+        handler_name="create_long_term_goal",
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "success_criteria": {"type": "string"},
+            },
+            "required": ["title"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="update_long_term_goal",
+        description="Local autonomy tool. Append progress or status updates to an existing long-term goal.",
+        tags=["autonomy", "goal", "progress", "long_term", "自律", "長期目標", "進捗"],
+        examples=[
+            "長期目標にX投稿の結果を追記する",
+            '{"goal_id":"goal-1234abcd","update_text":"初回投稿案を作成した","status":"active"}',
+        ],
+        handler_name="update_long_term_goal",
+        parameters={
+            "type": "object",
+            "properties": {
+                "goal_id": {"type": "string"},
+                "update_text": {"type": "string"},
+                "status": {"type": "string"},
+            },
+            "required": ["goal_id", "update_text"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
         name="send_notification",
         description="Local skeleton. Send a short notification to the user when the event needs attention.",
         tags=["notify", "notification", "alert", "通知", "知らせる", "アラート"],
@@ -398,3 +603,65 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
         },
     ),
 ]
+
+
+def get_available_tool_definitions() -> List[ToolDefinition]:
+    """Return static tools plus dynamic tools advertised by connected PC clients."""
+    definitions = list(DEFAULT_TOOL_DEFINITIONS)
+    seen_names = {definition.name for definition in definitions}
+
+    for tool in _xmcp_tool_definitions():
+        if tool.name in seen_names:
+            continue
+        definitions.append(tool)
+        seen_names.add(tool.name)
+
+    for tool in _connected_pc_tool_definitions():
+        name = str(tool.get("name") or tool.get("tool") or "").strip()
+        if not name or name in seen_names:
+            continue
+
+        description = str(
+            tool.get("description")
+            or tool.get("summary")
+            or f"Connected PC client tool: {name}"
+        ).strip()
+        parameters = tool.get("parameters")
+        if not isinstance(parameters, dict):
+            parameters = PC_GENERIC_PARAMETERS
+        tags = ["pc", "windows", "connected", "dynamic", name]
+        lowered_name = name.casefold()
+        if "twitter" in lowered_name or lowered_name.startswith("x_"):
+            tags.extend(["twitter", "x", "social", "approval", "SNS", "承認"])
+
+        definitions.append(
+            ToolDefinition(
+                name=name,
+                description=f"Connected PC client tool. {description}",
+                tags=tags,
+                examples=[name],
+                handler_name="pc_tool_call",
+                parameters=parameters,
+            )
+        )
+        seen_names.add(name)
+
+    return definitions
+
+
+def _connected_pc_tool_definitions() -> List[Dict]:
+    try:
+        from agent.pc_tool_bridge import get_connected_pc_tools
+
+        return get_connected_pc_tools()
+    except Exception:
+        return []
+
+
+def _xmcp_tool_definitions() -> List[ToolDefinition]:
+    try:
+        from agent.mcp_client import get_xmcp_tool_definitions
+
+        return get_xmcp_tool_definitions()
+    except Exception:
+        return []

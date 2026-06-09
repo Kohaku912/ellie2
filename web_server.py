@@ -15,8 +15,10 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from agent.autonomy_runtime import AutonomyRuntime, get_autonomy_status
 from agent.instruction_runner import InstructionRunner
 from agent.logging_utils import configure_utf8_stdio
+from agent.mcp_client import get_xmcp_status
 from agent.time_utils import agent_tz, isoformat_local
 from agent.pc_tool_bridge import (
     get_pc_tool_bridge_status,
@@ -47,6 +49,7 @@ AUDIT_STATE_MAX_CHARS = 12000
 
 app = FastAPI(title=f"{AGENT_NAME} Web Dashboard")
 _RUNNER: Optional[InstructionRunner] = None
+_AUTONOMY_RUNTIME: Optional[AutonomyRuntime] = None
 _CHAT_LOCK = threading.Lock()
 _STARTUP_BRIDGE_ERROR: Optional[str] = None
 
@@ -57,17 +60,21 @@ class ChatRequest(BaseModel):
 
 @app.on_event("startup")
 def _startup() -> None:
-    global _STARTUP_BRIDGE_ERROR
+    global _STARTUP_BRIDGE_ERROR, _AUTONOMY_RUNTIME
     try:
         start_pc_tool_bridge_server()
         _STARTUP_BRIDGE_ERROR = None
     except Exception as error:
         _STARTUP_BRIDGE_ERROR = str(error)
         logger.warning("PC tool bridge could not be started for web dashboard: %s", error)
+    _AUTONOMY_RUNTIME = AutonomyRuntime(lambda: _get_runner().agent)
+    _AUTONOMY_RUNTIME.start()
 
 
 @app.on_event("shutdown")
 def _shutdown() -> None:
+    if _AUTONOMY_RUNTIME:
+        _AUTONOMY_RUNTIME.stop()
     stop_pc_tool_bridge_server()
 
 
@@ -117,11 +124,14 @@ def build_state_snapshot() -> JsonDict:
             "self": _read_text_file(SELF_FILE),
             "state": _read_text_file(SELF_STATE_FILE),
             "social_needs": _read_json_file(SOCIAL_NEEDS_FILE),
+            "long_term_goals": _read_text_file(MEMORY_DIR / "long_term_goals.md"),
         },
         "pc_bridge": {
             **bridge_status,
             "startup_error": _STARTUP_BRIDGE_ERROR or bridge_status.get("startup_error"),
         },
+        "xmcp": get_xmcp_status(),
+        "autonomy": get_autonomy_status(),
         "tools": _tool_registry_snapshot(),
         "logs": {
             "latest_audit": audit_log,
@@ -144,6 +154,8 @@ def _ensure_local_request(request: Request) -> None:
 
 
 def _safe_config_snapshot() -> JsonDict:
+    from config import XMCP_AUTO_INSTALL, XMCP_DIR, XMCP_ENABLED, XMCP_SERVER_URL
+
     return {
         "agent_name": AGENT_NAME,
         "agent_timezone": AGENT_TIMEZONE,
@@ -156,6 +168,12 @@ def _safe_config_snapshot() -> JsonDict:
         "paths": {
             "memory_dir": str(MEMORY_DIR),
             "log_dir": str(LOG_DIR),
+        },
+        "xmcp": {
+            "enabled": XMCP_ENABLED,
+            "auto_install": XMCP_AUTO_INSTALL,
+            "server_url": XMCP_SERVER_URL,
+            "install_dir": str(XMCP_DIR),
         },
     }
 
@@ -249,7 +267,7 @@ def _log_file_overview() -> list[JsonDict]:
 
 
 def _tool_registry_snapshot() -> JsonDict:
-    from agent.tool_registry import DEFAULT_TOOL_DEFINITIONS, PC_TOOL_DEFINITIONS
+    from agent.tool_registry import PC_TOOL_DEFINITIONS, get_available_tool_definitions
 
     def summarize(tool: Any) -> JsonDict:
         parameters = tool.parameters if isinstance(tool.parameters, dict) else {}
@@ -261,10 +279,12 @@ def _tool_registry_snapshot() -> JsonDict:
             "required_arguments": parameters.get("required", []),
         }
 
+    available_tools = get_available_tool_definitions()
     return {
-        "total_count": len(DEFAULT_TOOL_DEFINITIONS),
+        "total_count": len(available_tools),
         "pc_tool_count": len(PC_TOOL_DEFINITIONS),
-        "tools": [summarize(tool) for tool in DEFAULT_TOOL_DEFINITIONS],
+        "xmcp_tool_count": len([tool for tool in available_tools if tool.name.startswith("xmcp__")]),
+        "tools": [summarize(tool) for tool in available_tools],
     }
 
 
@@ -625,10 +645,15 @@ INDEX_HTML = r"""<!doctype html>
       const data = await stateResponse.json();
       const auditData = await auditResponse.json();
       const bridge = data.pc_bridge || {};
+      const xmcp = data.xmcp || {};
+      const autonomy = data.autonomy || {};
       const tools = data.tools || {};
       el("overview").innerHTML = [
         pill(`generated: ${data.generated_at || "-"}`),
         pill(`PC clients: ${bridge.client_count || 0}`, bridge.client_count ? "good" : "warn"),
+        pill(`XMCP: ${xmcp.status || "unknown"}`, xmcp.ok ? "good" : "warn"),
+        pill(`autonomy: ${autonomy.started ? "on" : "standby"}`, autonomy.owns_lock ? "good" : "warn"),
+        pill(`self queue: ${autonomy.pending_count || 0}`),
         pill(`tools: ${tools.total_count || 0}`),
         pill(`model: ${(data.config || {}).cerebras_model || "-"}`)
       ].join("");
@@ -636,12 +661,19 @@ INDEX_HTML = r"""<!doctype html>
       setPre("pcBridge", bridge);
       setPre("socialNeeds", ((data.files || {}).social_needs || {}).data ?? ((data.files || {}).social_needs || {}).content);
       setPre("memory", ((data.files || {}).memory || {}).content);
-      setPre("longTermMemory", ((data.files || {}).long_term_memory || {}).content);
+      setPre(
+        "longTermMemory",
+        [
+          ((data.files || {}).long_term_memory || {}).content || "",
+          ((data.files || {}).long_term_goals || {}).content ? "\n\n--- 長期目標 ---\n" + ((data.files || {}).long_term_goals || {}).content : ""
+        ].join("")
+      );
       setPre("selfModel", ((data.files || {}).self || {}).content);
       setPre("selfState", ((data.files || {}).state || {}).content);
       el("toolSummary").innerHTML = [
         pill(`total: ${tools.total_count || 0}`),
-        pill(`PC: ${tools.pc_tool_count || 0}`)
+        pill(`PC: ${tools.pc_tool_count || 0}`),
+        pill(`XMCP: ${tools.xmcp_tool_count || 0}`)
       ].join("");
       el("tools").innerHTML = (tools.tools || [])
         .map((tool) => `<span class="tool" title="${escapeHtml(tool.description || "")}">${escapeHtml(tool.name || "")}</span>`)

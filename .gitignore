@@ -24,6 +24,13 @@ env/
 agent_data/logs/
 agent_data/archive/
 agent_data/task_outputs/
+agent_data/vendor/
+agent_data/runtime/
+agent_data/autonomy_queue.jsonl
+agent_data/long_term_goals.md
+agent_data/creative_expression.md
+agent_data/self_development.md
+agent_data/self_development_backups/
 agent_data/task_log.json
 agent_data/social_needs.json
 

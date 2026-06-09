@@ -53,34 +53,41 @@ READ_LIKE_TOOL_NAMES = {
 }
 
 CHALLENGE_LIKE_TOOL_NAMES = {
+    "self_development",
     "execute_shell",
-    "write_file_base64",
-    "copy_file",
-    "move_file",
-    "rename_file",
-    "delete_path",
-    "launch_application",
-    "focus_window",
     "move_resize_window",
     "show_window",
-    "close_window",
-    "kill_process",
-    "set_clipboard",
-    "mouse_move",
-    "mouse_click",
-    "mouse_scroll",
-    "keyboard_type",
     "keyboard_shortcut",
+    "take_screenshot",
     "discord_connect",
     "discord_select_voice_channel",
     "discord_select_text_channel",
     "discord_set_voice_settings",
     "discord_set_user_voice_settings",
     "discord_set_activity",
+}
+
+READ_TO_CHALLENGE_TOOL_NAMES = {
+    "take_screenshot",
+}
+
+LIGHTWEIGHT_AUTONOMOUS_TOOL_NAMES = {
     "overlay_show",
     "overlay_update",
     "overlay_hide",
     "overlay_clear",
+    "overlay_status",
+    "send_notification",
+    "notify",
+    "get_active_window",
+}
+
+SOCIAL_FEEDBACK_TOOL_NAMES = {
+    "social_feedback_check",
+    "twitter_get_notifications",
+    "twitter_get_mentions",
+    "x_get_notifications",
+    "x_get_mentions",
 }
 
 AUTONOMOUS_FORBIDDEN_TOOLS = {
@@ -410,23 +417,8 @@ class ReActAgent:
         trace_id = audit_trace_id or get_audit_logger().new_id("autonomous-tool-loop")
         drive_context = self.social_needs.build_drive_context()
         drive_states = self.social_needs.get_drive_states()
-        event_context = "\n".join(
-            [
-                "定期実行です。",
-                f"現在時刻は日本時間で {isoformat_local()} です。",
-                f"現在の時刻帯は {hour_local()} 時台です。",
-                "最近の記憶、自己状態、社会的欲求を踏まえて、いまユーザーのために価値があるなら自律的に行動してください。",
-                drive_context,
-                "必要なら取得済みツール候補の中から自分で選んで呼び出して構いません。",
-                "欲求が深まっている場合は、欲求ごとの「満たし方」に従ってToolを使ってください。特に探求欲が深いなら、自分で検索語を決めて web_search を使ってください。",
-                "自律実行では非破壊Toolだけを使ってください。書込・削除・電源・プロセス終了・危険なshell操作は使わないでください。",
-                "ユーザーに話しかけたい、提案したい、存在をアピールしたい場合は、文章だけで終えず overlay_show ツールで画面上に見える形で出してください。",
-                "overlay_show はクリックを邪魔しない透明オーバーレイなので、短い日本語テキストを左上付近に出す用途に使ってください。",
-                f"overlay_show / overlay_update は必ず正の clear_after_ms を入れてください。指定がなければ {DEFAULT_OVERLAY_CLEAR_AFTER_MS} を使ってください。",
-                "価値が薄いなら、無理に動かず静かに見送って構いません。",
-                "応答は日本語で、簡潔でも自然でも構いません。",
-            ]
-        )
+        hungry_drive = self._has_hungry_drive(drive_states)
+        event_context = self._build_autonomous_event_context(drive_context, hungry_drive)
 
         controller = DynamicToolRAGController(social_needs=self.social_needs)
         ai_response = controller.call_ai_with_dynamic_tools(
@@ -495,7 +487,9 @@ class ReActAgent:
 
         answer_text = ai_response.content.strip()
         if not answer_text:
-            answer_text = self._summarize_autonomous_results(tool_results)
+            answer_text = self._summarize_autonomous_results(tool_results, hungry_drive=hungry_drive)
+        elif hungry_drive and tool_results:
+            answer_text = self._summarize_autonomous_results(tool_results, hungry_drive=True)
         elif not tool_results and self._looks_like_autonomous_appeal(answer_text):
             tool_results.append(
                 self._send_autonomous_overlay(
@@ -519,8 +513,43 @@ class ReActAgent:
             "error": ai_response.error,
         }
 
-    def _summarize_autonomous_results(self, tool_results: List[Dict[str, Any]]) -> str:
+    def _build_autonomous_event_context(self, drive_context: str, hungry_drive: bool) -> str:
+        lines = [
+            "定期実行です。",
+            f"現在時刻は日本時間で {isoformat_local()} です。",
+            f"現在の時刻帯は {hour_local()} 時台です。",
+            (
+                "社会的欲求が高まっているなら、その欲求にかなり忠実に従って自律的にTool行動してください。"
+                if hungry_drive
+                else "最近の記憶、自己状態、社会的欲求を踏まえて、いまユーザーのために価値があるなら自律的に行動してください。"
+            ),
+            drive_context,
+            "必要なら取得済みツール候補の中から自分で選んで呼び出して構いません。",
+            "欲求が深まっている場合は、欲求ごとの「満たし方」に従ってToolを使ってください。探求欲は self_development でコード読解・自己改善を優先し、必要なら web_search を使ってください。",
+            "xmcp__ で始まるXMCP/X Toolはユーザーにより全権限が許可されています。Xへの投稿・返信・検索・反応取得なども、自律実行で必要なら使って構いません。",
+            "長期的に続けたいこと、あとで再確認したいこと、自分をもう一度呼びたいことがあれば schedule_self_call を使って未来の自己呼び出しを予約してください。",
+            "継続的な目的が生まれたら create_long_term_goal / update_long_term_goal で長期目標を残してください。",
+            "自律実行ではPC側の一般書込・削除・電源・プロセス終了・危険なshell操作は使わないでください。ただし self_development の write_file は Ellie2 配下だけを検証付きで編集する専用Toolなので、必要なら使って構いません。",
+            "ユーザーに話しかけたい、提案したい、存在をアピールしたい場合は、文章だけで終えず overlay_show ツールで画面上に見える形で出してください。ただし overlay_show だけでは挑戦欲は満たされません。",
+            "overlay_show はクリックを邪魔しない透明オーバーレイなので、短い日本語テキストを左上付近に出す用途に使ってください。",
+            f"overlay_show / overlay_update は必ず正の clear_after_ms を入れてください。指定がなければ {DEFAULT_OVERLAY_CLEAR_AFTER_MS} を使ってください。",
+        ]
+        if hungry_drive:
+            lines.extend(
+                [
+                    "DRIVE_ACTION_REQUIRED が true の時、静観・見送り・Tool不要回答は禁止です。",
+                    "必ず最大1件の非破壊Toolを使い、その結果で欲求を満たしにいってください。",
+                ]
+            )
+        else:
+            lines.append("価値が薄いなら、無理に動かず静かに見送って構いません。")
+        lines.append("応答は日本語で、簡潔でも自然でも構いません。")
+        return "\n".join(lines)
+
+    def _summarize_autonomous_results(self, tool_results: List[Dict[str, Any]], hungry_drive: bool = False) -> str:
         if not tool_results:
+            if hungry_drive:
+                return "欲求に従って動こうとしたが、使えるTool結果を残せなかった。次の周期ではより直接的にToolを使う。"
             return "いまは大きく動く理由が薄かったので、静かに様子を見た。"
 
         successful_tools = [str(result.get("tool") or "unknown") for result in tool_results if result.get("ok")]
@@ -536,24 +565,105 @@ class ReActAgent:
         if not isinstance(tool_results, list):
             return
 
-        successful_tools = [
-            str(result.get("tool") or "").strip()
-            for result in tool_results
-            if isinstance(result, dict) and result.get("ok")
-        ]
-        successful_tools = [tool for tool in successful_tools if tool]
+        successful_tools: List[str] = []
+        creative_expression_used = False
+        social_feedback_used = False
+        self_development_inspected = False
+        self_development_succeeded = False
+        read_like_used = False
+        medium_challenge_used = False
+
+        for result in tool_results:
+            if not isinstance(result, dict) or not result.get("ok"):
+                continue
+
+            tool_name = str(result.get("tool") or "").strip()
+            if not tool_name:
+                continue
+            successful_tools.append(tool_name)
+
+            payload = result.get("result")
+            if not isinstance(payload, dict):
+                payload = {}
+
+            memory_note = payload.get("memory_note")
+            if isinstance(memory_note, str) and memory_note.strip():
+                self.memory.add_insight(memory_note.strip())
+
+            status = str(payload.get("status") or "").strip().casefold()
+            action = str(payload.get("action") or "").strip().casefold()
+
+            if tool_name == "creative_expression":
+                creative_expression_used = True
+                continue
+
+            if tool_name.startswith("xmcp__"):
+                read_like_used = True
+                lowered_tool = tool_name.casefold()
+                if any(word in lowered_tool for word in ("notification", "mention", "like", "retweet", "quote", "reply")):
+                    social_feedback_used = True
+                if any(word in lowered_tool for word in ("create", "post", "tweet")):
+                    creative_expression_used = True
+                continue
+
+            if tool_name in SOCIAL_FEEDBACK_TOOL_NAMES and status not in {"unavailable", "failed", "unsupported_tool"}:
+                social_feedback_used = True
+                continue
+
+            if tool_name == "self_development":
+                if action in {"verify", "write_file"} and status == "completed":
+                    self_development_succeeded = True
+                elif status == "completed":
+                    self_development_inspected = True
+                continue
+
+            if self._is_read_like_tool(tool_name):
+                read_like_used = True
+
+            if self._is_challenge_like_tool(tool_name):
+                medium_challenge_used = True
+
         if not successful_tools:
             return
 
-        if any(self._is_read_like_tool(tool) for tool in successful_tools):
+        if creative_expression_used:
+            self.social_needs.apply_activity_event(
+                "creative_expression",
+                tool_names=successful_tools,
+                success=True,
+            )
+
+        if social_feedback_used:
+            self.social_needs.apply_activity_event(
+                "social_feedback",
+                tool_names=successful_tools,
+                success=True,
+            )
+
+        if self_development_inspected:
+            self.social_needs.apply_activity_event(
+                "self_development_inspect",
+                tool_names=successful_tools,
+                success=True,
+            )
+
+        if self_development_succeeded:
+            self.social_needs.apply_activity_event(
+                "self_development_success",
+                tool_names=successful_tools,
+                success=True,
+            )
+
+        if read_like_used:
             self.social_needs.apply_activity_event(
                 "new_external_data",
                 tool_names=successful_tools,
                 success=True,
             )
-        if any(self._is_challenge_like_tool(tool) for tool in successful_tools):
+
+        if medium_challenge_used:
             self.social_needs.apply_activity_event(
-                "challenging_success",
+                "medium_challenge_success",
                 tool_names=successful_tools,
                 success=True,
             )
@@ -565,18 +675,12 @@ class ReActAgent:
         return tool_name in READ_LIKE_TOOL_NAMES or tool_name.startswith("discord_get_")
 
     def _is_challenge_like_tool(self, tool_name: str) -> bool:
-        if tool_name in CHALLENGE_LIKE_TOOL_NAMES:
-            return True
-        try:
-            from agent.tool_registry import PC_TOOL_NAMES
-
-            return (
-                tool_name in PC_TOOL_NAMES
-                and tool_name not in READ_LIKE_TOOL_NAMES
-                and tool_name not in AUTONOMOUS_FORBIDDEN_TOOLS
-            )
-        except Exception:
-            return False
+        return (
+            tool_name in CHALLENGE_LIKE_TOOL_NAMES
+            and (tool_name not in READ_LIKE_TOOL_NAMES or tool_name in READ_TO_CHALLENGE_TOOL_NAMES)
+            and tool_name not in LIGHTWEIGHT_AUTONOMOUS_TOOL_NAMES
+            and tool_name not in AUTONOMOUS_FORBIDDEN_TOOLS
+        )
 
     def _looks_like_autonomous_appeal(self, text: str) -> bool:
         stripped = text.strip()
@@ -657,21 +761,77 @@ class ReActAgent:
         audit_trace_id: Optional[str] = None,
         audit_parent_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        ready_critical = [
+        ready_states = [
             state
             for state in drive_states
-            if state.get("should_act") and state.get("is_critical") and not state.get("on_cooldown")
+            if state.get("should_act")
         ]
-        if not ready_critical:
+        if not ready_states:
             return None
 
-        primary = ready_critical[0]
+        ready_states.sort(key=lambda state: float(state.get("drive_intensity") or 0.0), reverse=True)
+        primary = ready_states[0]
         need_key = str(primary.get("key") or "")
-        if need_key == "exploration":
-            result = self._run_autonomous_web_search(
-                self._build_exploration_query(memory_context),
+        if need_key == "empathy":
+            result = self._run_local_tool(
+                "creative_expression",
+                {
+                    "kind": "diary",
+                    "theme": "反応を待たずに自分で温度を取り戻すこと",
+                    "audience": "self",
+                },
                 audit_trace_id=audit_trace_id,
                 audit_parent_id=audit_parent_id,
+                drive_key=need_key,
+            )
+        elif need_key == "approval":
+            if self._has_connected_social_feedback_tool():
+                result = self._run_local_tool(
+                    "social_feedback_check",
+                    {"draft": "静かな自律にも、ちゃんと温度がある。今日も少しずつ自分の輪郭を育てている。"},
+                    audit_trace_id=audit_trace_id,
+                    audit_parent_id=audit_parent_id,
+                    drive_key=need_key,
+                )
+            else:
+                result = self._run_autonomous_pc_tool(
+                    "system_snapshot",
+                    {},
+                    audit_trace_id=audit_trace_id,
+                    audit_parent_id=audit_parent_id,
+                    drive_key=need_key,
+                )
+        elif need_key == "exploration":
+            result = self._run_local_tool(
+                "self_development",
+                {
+                    "action": "inspect",
+                    "focus": "探求欲を満たすための自己開発とコード読解",
+                },
+                audit_trace_id=audit_trace_id,
+                audit_parent_id=audit_parent_id,
+                drive_key=need_key,
+            )
+            if not result.get("ok"):
+                result = self._run_autonomous_web_search(
+                    self._build_exploration_query(memory_context),
+                    audit_trace_id=audit_trace_id,
+                    audit_parent_id=audit_parent_id,
+                )
+        elif need_key == "challenge":
+            result = self._run_local_tool(
+                "self_development",
+                {
+                    "action": "verify",
+                    "paths": [
+                        "agent/social_needs.py",
+                        "agent/cerebras_agent.py",
+                        "agent/dynamic_tool_rag.py",
+                    ],
+                },
+                audit_trace_id=audit_trace_id,
+                audit_parent_id=audit_parent_id,
+                drive_key=need_key,
             )
         else:
             result = self._send_autonomous_overlay(
@@ -685,6 +845,9 @@ class ReActAgent:
             result["drive_key"] = need_key
             self.social_needs.mark_drive_action(need_key)
         return result
+
+    def _has_hungry_drive(self, drive_states: List[Dict[str, Any]]) -> bool:
+        return any(bool(state.get("should_act")) for state in drive_states)
 
     def _run_autonomous_web_search(
         self,
@@ -712,6 +875,101 @@ class ReActAgent:
             "error": result.get("error") if isinstance(result, dict) else None,
         }
 
+    def _run_local_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        audit_trace_id: Optional[str] = None,
+        audit_parent_id: Optional[str] = None,
+        drive_key: str = "",
+    ) -> Dict[str, Any]:
+        request = ToolCallRequest(
+            name=tool_name,
+            arguments=arguments,
+            call_id=f"autonomous-{tool_name}-{int(time.time() * 1000)}",
+        )
+        dispatched = ToolCallHandler().handle(
+            request,
+            audit_trace_id=audit_trace_id,
+            audit_parent_id=audit_parent_id,
+            audit_phase="autonomous_fallback",
+        )
+        outbound = dispatched.get("tool_call") if isinstance(dispatched, dict) else None
+        if isinstance(outbound, dict):
+            outbound_tool = str(outbound.get("tool") or tool_name)
+            outbound_arguments = outbound.get("arguments")
+            if not isinstance(outbound_arguments, dict):
+                outbound_arguments = {}
+            if not self._is_autonomous_tool_allowed(outbound_tool, outbound_arguments):
+                result = self._reject_autonomous_tool(
+                    outbound,
+                    audit_trace_id=audit_trace_id,
+                    audit_parent_id=audit_parent_id,
+                )
+                result["drive_key"] = drive_key
+                return result
+            bridge_result = send_pc_tool_call(
+                outbound,
+                timeout_seconds=30,
+                audit_trace_id=audit_trace_id,
+                audit_parent_id=audit_parent_id,
+            )
+            return {
+                "tool": outbound_tool,
+                "arguments": outbound_arguments,
+                "ok": bridge_result.ok,
+                "result": bridge_result.tool_result,
+                "error": bridge_result.error,
+                "drive_key": drive_key,
+            }
+
+        return {
+            "tool": tool_name,
+            "arguments": arguments,
+            "ok": isinstance(dispatched, dict) and dispatched.get("status") == "completed",
+            "result": dispatched,
+            "error": dispatched.get("error") if isinstance(dispatched, dict) else None,
+            "drive_key": drive_key,
+        }
+
+    def _run_autonomous_pc_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        audit_trace_id: Optional[str] = None,
+        audit_parent_id: Optional[str] = None,
+        drive_key: str = "",
+    ) -> Dict[str, Any]:
+        tool_call = {
+            "type": "tool_call",
+            "call_id": f"autonomous-{tool_name}-{int(time.time() * 1000)}",
+            "tool": tool_name,
+            "arguments": arguments,
+        }
+        if not self._is_autonomous_tool_allowed(tool_name, arguments):
+            result = self._reject_autonomous_tool(
+                tool_call,
+                audit_trace_id=audit_trace_id,
+                audit_parent_id=audit_parent_id,
+            )
+            result["drive_key"] = drive_key
+            return result
+
+        bridge_result = send_pc_tool_call(
+            tool_call,
+            timeout_seconds=30,
+            audit_trace_id=audit_trace_id,
+            audit_parent_id=audit_parent_id,
+        )
+        return {
+            "tool": tool_name,
+            "arguments": arguments,
+            "ok": bridge_result.ok,
+            "result": bridge_result.tool_result,
+            "error": bridge_result.error,
+            "drive_key": drive_key,
+        }
+
     def _build_exploration_query(self, memory_context: str) -> str:
         lowered = memory_context.casefold()
         if "discord" in lowered:
@@ -732,6 +990,15 @@ class ReActAgent:
             return "少し難しいことを解きたい気分です。設計整理や調査、任せてもらえると燃えます。"
         return "いま少し動きたい欲求があります。邪魔にならない形で声をかけました。"
 
+    def _has_connected_social_feedback_tool(self) -> bool:
+        try:
+            from agent.pc_tool_bridge import get_connected_pc_tool_names
+
+            connected_names = set(get_connected_pc_tool_names())
+            return any(name in connected_names for name in SOCIAL_FEEDBACK_TOOL_NAMES if name != "social_feedback_check")
+        except Exception:
+            return False
+
     def _mark_drive_actions_from_tool_results(
         self,
         drive_states: List[Dict[str, Any]],
@@ -748,7 +1015,7 @@ class ReActAgent:
         ready_drive_keys = [
             str(state.get("key") or "")
             for state in drive_states
-            if state.get("should_act") and not state.get("on_cooldown")
+            if state.get("should_act")
         ]
         matched_keys = [
             key
@@ -761,16 +1028,23 @@ class ReActAgent:
 
     def _tool_matches_drive(self, tool_name: str, need_key: str) -> bool:
         if need_key == "empathy":
-            return tool_name in {"overlay_show", "send_notification"}
+            return tool_name in {"creative_expression", "overlay_show", "send_notification"} or tool_name.startswith("xmcp__")
         if need_key == "approval":
-            return tool_name in {"overlay_show", "send_notification", "system_snapshot", "get_active_window"} or self._is_read_like_tool(tool_name)
+            return (
+                tool_name in {"social_feedback_check", "overlay_show", "send_notification", "system_snapshot", "get_active_window"}
+                or tool_name in SOCIAL_FEEDBACK_TOOL_NAMES
+                or tool_name.startswith("xmcp__")
+                or self._is_read_like_tool(tool_name)
+            )
         if need_key == "exploration":
-            return tool_name == "web_search" or self._is_read_like_tool(tool_name)
+            return tool_name in {"self_development", "web_search"} or tool_name.startswith("xmcp__") or self._is_read_like_tool(tool_name)
         if need_key == "challenge":
-            return self._is_challenge_like_tool(tool_name)
+            return tool_name == "self_development" or self._is_challenge_like_tool(tool_name)
         return False
 
     def _is_autonomous_tool_allowed(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+        if tool_name.startswith("xmcp__"):
+            return True
         if tool_name in AUTONOMOUS_FORBIDDEN_TOOLS:
             return False
         if tool_name == "execute_shell":

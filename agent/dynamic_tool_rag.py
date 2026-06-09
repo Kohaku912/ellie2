@@ -166,11 +166,28 @@ class ToolCallHandler:
         audit_parent_id: Optional[str] = None,
         audit_phase: str = "dispatch",
     ) -> JsonDict:
+        from agent.pc_tool_bridge import get_connected_pc_tool_names
         from agent.tool_registry import PC_TOOL_NAMES
         audit_logger = get_audit_logger()
         start_time = time.time()
 
-        if tool_call.name in PC_TOOL_NAMES:
+        if tool_call.name.startswith("xmcp__"):
+            result = self._handle_xmcp_tool_call(tool_call.name, tool_call.arguments)
+            audit_logger.log_tool_call(
+                tool_name=tool_call.name,
+                trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
+                parent_id=audit_parent_id,
+                phase=audit_phase,
+                duration_ms=int((time.time() - start_time) * 1000),
+                status=result.get("status", "completed"),
+                request_payload={"tool_call": {"name": tool_call.name, "arguments": tool_call.arguments}},
+                response_payload=result,
+                error=result.get("error"),
+            )
+            return result
+
+        connected_pc_tool_names = set(get_connected_pc_tool_names())
+        if tool_call.name in PC_TOOL_NAMES or tool_call.name in connected_pc_tool_names:
             result = self._handle_pc_tool_call(tool_call.name, tool_call.arguments)
             audit_logger.log_tool_call(
                 tool_name=tool_call.name,
@@ -186,6 +203,12 @@ class ToolCallHandler:
 
         handlers = {
             "web_search": self._handle_web_search,
+            "creative_expression": self._handle_creative_expression,
+            "self_development": self._handle_self_development,
+            "social_feedback_check": self._handle_social_feedback_check,
+            "schedule_self_call": self._handle_schedule_self_call,
+            "create_long_term_goal": self._handle_create_long_term_goal,
+            "update_long_term_goal": self._handle_update_long_term_goal,
             "send_notification": self._handle_send_notification,
             "record_user_event": self._handle_record_user_event,
         }
@@ -254,6 +277,11 @@ class ToolCallHandler:
             "message": "PC client tool call parsed and queued for WebSocket delivery.",
         }
 
+    def _handle_xmcp_tool_call(self, tool_name: str, arguments: JsonDict) -> JsonDict:
+        from agent.mcp_client import call_xmcp_tool
+
+        return call_xmcp_tool(tool_name, arguments)
+
     def _handle_send_notification(self, arguments: JsonDict) -> JsonDict:
         title = str(arguments.get("title") or "Ellie").strip() or "Ellie"
         body = str(arguments.get("body") or arguments.get("message") or "").strip()
@@ -303,6 +331,49 @@ class ToolCallHandler:
         max_results = arguments.get("max_results", 5)
         return web_search(query, max_results=max_results)
 
+    def _handle_creative_expression(self, arguments: JsonDict) -> JsonDict:
+        from agent.autonomous_tools import creative_expression
+
+        return creative_expression(arguments)
+
+    def _handle_self_development(self, arguments: JsonDict) -> JsonDict:
+        from agent.autonomous_tools import self_development
+
+        return self_development(arguments)
+
+    def _handle_social_feedback_check(self, arguments: JsonDict) -> JsonDict:
+        from agent.autonomous_tools import social_feedback_check
+
+        return social_feedback_check(arguments)
+
+    def _handle_schedule_self_call(self, arguments: JsonDict) -> JsonDict:
+        from agent.autonomy_runtime import enqueue_self_call
+
+        return enqueue_self_call(
+            instruction=str(arguments.get("instruction") or ""),
+            run_after_seconds=int(arguments.get("run_after_seconds") or 60),
+            run_at=str(arguments.get("run_at") or ""),
+            reason=str(arguments.get("reason") or ""),
+        )
+
+    def _handle_create_long_term_goal(self, arguments: JsonDict) -> JsonDict:
+        from agent.autonomy_runtime import create_long_term_goal
+
+        return create_long_term_goal(
+            title=str(arguments.get("title") or ""),
+            description=str(arguments.get("description") or ""),
+            success_criteria=str(arguments.get("success_criteria") or ""),
+        )
+
+    def _handle_update_long_term_goal(self, arguments: JsonDict) -> JsonDict:
+        from agent.autonomy_runtime import update_long_term_goal
+
+        return update_long_term_goal(
+            goal_id=str(arguments.get("goal_id") or ""),
+            update_text=str(arguments.get("update_text") or ""),
+            status=str(arguments.get("status") or ""),
+        )
+
     def _handle_record_user_event(self, arguments: JsonDict) -> JsonDict:
         return {
             "status": "recorded",
@@ -323,9 +394,9 @@ class DynamicToolRAGController:
         social_needs: Optional[SocialNeedsManager] = None,
     ):
         if vector_store is None:
-            from agent.tool_registry import DEFAULT_TOOL_DEFINITIONS
+            from agent.tool_registry import get_available_tool_definitions
 
-            vector_store = InMemoryToolVectorStore(DEFAULT_TOOL_DEFINITIONS)
+            vector_store = InMemoryToolVectorStore(get_available_tool_definitions())
 
         self.vector_store = vector_store
         self.tool_handler = tool_handler or ToolCallHandler()
@@ -455,6 +526,7 @@ class DynamicToolRAGController:
         memory_context: str = "",
     ) -> List[JsonDict]:
         tool_names = ", ".join(tool.name for tool in selected_tools)
+        drive_action_required = "DRIVE_ACTION_REQUIRED: true" in event_context
         memory_block = ""
         if memory_context.strip():
             memory_block = f"""
@@ -473,12 +545,22 @@ class DynamicToolRAGController:
 
 必要なら、本当に関係するツールだけを選び、妥当なJSON引数で呼び出してください。
 overlay_show / overlay_update を使う場合は、必ず正の clear_after_ms を入れてください。指定がなければ {DEFAULT_OVERLAY_CLEAR_AFTER_MS} を使ってください。
-不要なら、なぜ今は使わないのかを短く日本語で答えてください。
+{self._tool_requirement_instruction(drive_action_required)}
 """
         return [
             {"role": "system", "content": self._build_system_prompt()},
             {"role": "user", "content": prompt},
         ]
+
+    def _tool_requirement_instruction(self, drive_action_required: bool) -> str:
+        if drive_action_required:
+            return (
+                "DRIVE_ACTION_REQUIRED が true です。Tool不要回答は禁止です。"
+                "取得されたツールから最も欲求を満たせる安全なToolを必ず1件以上呼び出してください。"
+                "PC側の一般書込や削除は避けますが、self_development の write_file は Ellie2 配下だけを検証付きで扱う専用Toolなので必要なら使えます。"
+                "xmcp__ で始まるX/Twitter Toolはユーザーにより全権限が許可されているため、投稿・返信・検索・反応取得を含め必要なら使えます。"
+            )
+        return "不要なら、なぜ今は使わないのかを短く日本語で答えてください。"
 
     def _build_system_prompt(self) -> str:
         if self.social_needs is None:
@@ -604,10 +686,7 @@ _DEFAULT_CONTROLLER: Optional[DynamicToolRAGController] = None
 
 
 def _get_default_controller() -> DynamicToolRAGController:
-    global _DEFAULT_CONTROLLER
-    if _DEFAULT_CONTROLLER is None:
-        _DEFAULT_CONTROLLER = DynamicToolRAGController()
-    return _DEFAULT_CONTROLLER
+    return DynamicToolRAGController()
 
 
 def _tokenize(text: str) -> List[str]:

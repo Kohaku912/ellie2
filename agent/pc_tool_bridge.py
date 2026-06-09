@@ -190,6 +190,31 @@ class PersistentPCToolBridge:
             "remote_mode": False,
         }
 
+    def get_connected_tool_definitions(self) -> List[JsonDict]:
+        """Return Tool definitions advertised by connected PC clients."""
+        if self._remote_mode:
+            remote_status = self._fetch_remote_status()
+            return [
+                {"name": name, "description": f"Connected PC client tool: {name}"}
+                for name in remote_status.get("connected_tools", [])
+                if isinstance(name, str) and name.strip()
+            ]
+
+        try:
+            client_tool_sets = list(self._clients.values())
+        except RuntimeError:
+            client_tool_sets = []
+
+        tools_by_name: Dict[str, JsonDict] = {}
+        for tools in client_tool_sets:
+            for tool in tools:
+                if not isinstance(tool, dict):
+                    continue
+                name = str(tool.get("name") or tool.get("tool") or "").strip()
+                if name and name not in tools_by_name:
+                    tools_by_name[name] = dict(tool)
+        return sorted(tools_by_name.values(), key=lambda tool: str(tool.get("name") or tool.get("tool") or ""))
+
     def _run_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
@@ -541,6 +566,26 @@ def get_pc_tool_bridge_status(host: str = "127.0.0.1", port: int = 8765) -> Json
             "connected_tools": [],
         }
     return bridge.get_status()
+
+
+def get_connected_pc_tools(host: str = "127.0.0.1", port: int = 8765) -> List[JsonDict]:
+    """Return connected PC Tool definitions without starting the bridge."""
+    bridge = _BRIDGE
+    if bridge is None:
+        return []
+    if bridge.host != host or bridge.port != port:
+        return []
+    return bridge.get_connected_tool_definitions()
+
+
+def get_connected_pc_tool_names(host: str = "127.0.0.1", port: int = 8765) -> List[str]:
+    """Return names of connected PC Tools without starting the bridge."""
+    names = []
+    for tool in get_connected_pc_tools(host, port):
+        name = str(tool.get("name") or tool.get("tool") or "").strip()
+        if name:
+            names.append(name)
+    return sorted(set(names))
 
 
 def send_pc_tool_call(

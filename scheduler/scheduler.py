@@ -11,6 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from agent.audit_log import get_audit_logger
+from agent.autonomy_runtime import AutonomyRuntime
 from agent.cerebras_agent import ReActAgent
 from agent.memory import MemoryManager
 from agent.pc_tool_bridge import start_pc_tool_bridge_server, stop_pc_tool_bridge_server
@@ -31,12 +32,14 @@ class AutonomousAgentScheduler:
         self.self_model = SelfModelManager(self.memory)
         self.social_needs = SocialNeedsManager()
         self.agent = ReActAgent(self.memory, self.self_model, self.social_needs)
+        self.autonomy_runtime = AutonomyRuntime(lambda: self.agent)
         logger.info("Scheduler initialized")
 
     def start(self):
         start_pc_tool_bridge_server()
         self._setup_jobs()
         self.scheduler.start()
+        self.autonomy_runtime.start()
         logger.info("Scheduler started")
         self._log_startup()
 
@@ -44,6 +47,7 @@ class AutonomousAgentScheduler:
         if self.scheduler.running:
             self.scheduler.shutdown(wait=True)
             logger.info("Scheduler stopped gracefully")
+        self.autonomy_runtime.stop()
         stop_pc_tool_bridge_server()
 
     def _setup_jobs(self):

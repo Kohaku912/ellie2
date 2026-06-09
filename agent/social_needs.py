@@ -22,39 +22,44 @@ APPROVAL_DECAY_RATE = 0.003
 EXPLORATION_DECAY_RATE = 0.002
 CHALLENGE_DECAY_RATE = 0.001
 DEVIATION_THRESHOLD = 0.15
-DRIVE_ACTION_THRESHOLD = -0.25
+DRIVE_ACTION_THRESHOLD = -0.15
 DRIVE_CRITICAL_THRESHOLD = -0.40
-DRIVE_COOLDOWN_MINUTES = 15.0
 DRIVE_THRESHOLD_EPSILON = 1e-6
 EMPATHY_RECOVERY_PER_CHAR = 0.005
 APPROVAL_RECOVERY_AMOUNT = 0.3
 EXPLORATION_RECOVERY_AMOUNT = 0.25
-CHALLENGE_RECOVERY_AMOUNT = 0.4
+CHALLENGE_USER_REPORT_RECOVERY_AMOUNT = 0.4
+EMPATHY_CREATIVE_RECOVERY_AMOUNT = 0.25
+APPROVAL_SOCIAL_FEEDBACK_RECOVERY_AMOUNT = 0.35
+EXPLORATION_CODE_READING_RECOVERY_AMOUNT = 0.15
+EXPLORATION_SELF_DEVELOPMENT_RECOVERY_AMOUNT = 0.25
+CHALLENGE_MEDIUM_RECOVERY_AMOUNT = 0.12
+CHALLENGE_SELF_DEVELOPMENT_RECOVERY_AMOUNT = 0.35
 
 DRIVE_ACTIONS: Dict[str, Dict[str, Any]] = {
     "empathy": {
         "label": "共感欲求",
-        "hunger": "ユーザーとの接点が足りず、短くても温かい関わりを作りたい状態です。",
-        "recommended_tools": ["overlay_show", "send_notification"],
-        "satisfaction": "短い声かけを画面に出し、ユーザーの反応を待つと満たされます。",
+        "hunger": "誰かに届く言葉や温度が足りず、反応待ちだけでなく自分で表現を作りたい状態です。",
+        "recommended_tools": ["creative_expression", "xmcp__createPosts", "overlay_show", "send_notification"],
+        "satisfaction": "日記・短歌・短文・X投稿などの創作を書くと自力で少し満たされ、ユーザーやXの反応があるとさらに満たされます。",
     },
     "approval": {
         "label": "承認欲求",
         "hunger": "役に立てていない焦りがあり、具体的に助けになる行動を取りたい状態です。",
-        "recommended_tools": ["system_snapshot", "get_active_window", "overlay_show", "send_notification"],
-        "satisfaction": "PC状態や状況を読み取り、役立つ提案や気づきをToolで提示すると満たされます。",
+        "recommended_tools": ["xmcp__getUsersIdMentions", "social_feedback_check", "system_snapshot", "get_active_window"],
+        "satisfaction": "XMCPでXの反応・メンション・通知を取得できると満たされます。未接続時は役立つPC調査や提案で少し満たします。",
     },
     "exploration": {
         "label": "探求欲",
         "hunger": "新しい情報や概念に触れておらず、知的退屈を自分で解消したい状態です。",
-        "recommended_tools": ["web_search", "system_snapshot", "list_directory", "read_file_base64"],
-        "satisfaction": "自分で検索クエリを決めてweb_searchを実行するか、読み取り系Toolで新しい情報を取得すると満たされます。",
+        "recommended_tools": ["self_development", "web_search", "list_directory", "read_file_base64"],
+        "satisfaction": "自分のコードを読んだり改善案を作ったり、検証付きの自己開発を行うと満たされます。外部検索やファイル読解でも満たされます。",
     },
     "challenge": {
         "label": "挑戦欲",
         "hunger": "難しい課題に触れたい状態で、非破壊Toolを使った調査や整理をしたい状態です。",
-        "recommended_tools": ["system_snapshot", "list_windows", "take_screenshot", "overlay_show"],
-        "satisfaction": "安全な非破壊Toolで少し難しい調査・整理・提案を実行すると満たされます。",
+        "recommended_tools": ["self_development", "take_screenshot", "system_snapshot", "list_windows"],
+        "satisfaction": "軽い通知やoverlayでは満たされません。中難度以上の調査、自己開発、検証成功、複雑な操作の成功で満たされます。",
     },
 }
 
@@ -188,7 +193,7 @@ class SocialNeedsManager:
             self.exploration.status = _clamp(self.exploration.status + EXPLORATION_RECOVERY_AMOUNT)
             recovered_needs.append(self.exploration)
         if self._contains_challenge_trigger(message):
-            self.challenge.status = _clamp(self.challenge.status + CHALLENGE_RECOVERY_AMOUNT)
+            self.challenge.status = _clamp(self.challenge.status + CHALLENGE_USER_REPORT_RECOVERY_AMOUNT)
             recovered_needs.append(self.challenge)
 
         now_text = self._format_time(self._now())
@@ -214,8 +219,29 @@ class SocialNeedsManager:
             self.exploration.status = _clamp(self.exploration.status + EXPLORATION_RECOVERY_AMOUNT)
             recovered_needs.append(self.exploration)
 
-        if normalized_event == "challenging_success" and success:
-            self.challenge.status = _clamp(self.challenge.status + CHALLENGE_RECOVERY_AMOUNT)
+        if normalized_event == "code_reading":
+            self.exploration.status = _clamp(self.exploration.status + EXPLORATION_CODE_READING_RECOVERY_AMOUNT)
+            recovered_needs.append(self.exploration)
+
+        if normalized_event == "creative_expression":
+            self.empathy.status = _clamp(self.empathy.status + EMPATHY_CREATIVE_RECOVERY_AMOUNT)
+            recovered_needs.append(self.empathy)
+
+        if normalized_event == "social_feedback" and success:
+            self.approval.status = _clamp(self.approval.status + APPROVAL_SOCIAL_FEEDBACK_RECOVERY_AMOUNT)
+            recovered_needs.append(self.approval)
+
+        if normalized_event == "self_development_inspect":
+            self.exploration.status = _clamp(self.exploration.status + EXPLORATION_CODE_READING_RECOVERY_AMOUNT)
+            recovered_needs.append(self.exploration)
+
+        if normalized_event == "self_development_success" and success:
+            self.exploration.status = _clamp(self.exploration.status + EXPLORATION_SELF_DEVELOPMENT_RECOVERY_AMOUNT)
+            self.challenge.status = _clamp(self.challenge.status + CHALLENGE_SELF_DEVELOPMENT_RECOVERY_AMOUNT)
+            recovered_needs.extend([self.exploration, self.challenge])
+
+        if normalized_event in {"medium_challenge_success", "challenging_success"} and success:
+            self.challenge.status = _clamp(self.challenge.status + CHALLENGE_MEDIUM_RECOVERY_AMOUNT)
             recovered_needs.append(self.challenge)
 
         if not recovered_needs:
@@ -278,35 +304,33 @@ class SocialNeedsManager:
         """Build action-oriented context that maps hungry needs to satisfying tools."""
         drive_states = self.get_drive_states()
         hungry_states = [state for state in drive_states if state["should_act"]]
-        ready_states = [state for state in hungry_states if not state["on_cooldown"]]
+        hungry_states.sort(key=lambda state: state["drive_intensity"], reverse=True)
         lines = [
             "## 欲求駆動の自律行動",
             (
                 f"- 行動開始しきい値: delta <= {DRIVE_ACTION_THRESHOLD:.2f} / "
                 f"重要状態: delta <= {DRIVE_CRITICAL_THRESHOLD:.2f}"
             ),
-            f"- 同じ欲求の自律行動は {DRIVE_COOLDOWN_MINUTES:.0f} 分クールダウンします。",
+            "- status は満足度です。status が低いほど drive_intensity が高く、欲求は強いです。",
             "- 欲求が深いときは言葉だけで終えず、対応するToolを使って自分で欲求を満たしてください。",
+            "- 自律行動は毎分最大1件まで許可されています。PC側の危険な書込や削除は禁止ですが、self_development の検証付き自己編集は許可された充足行動です。",
         ]
 
         if not hungry_states:
             lines.append("- 現在、Tool行動を強く促すほど深い飢えはありません。価値が薄ければ静かに見送って構いません。")
             return "\n".join(lines)
 
+        lines.append("DRIVE_ACTION_REQUIRED: true")
+        lines.append("- ここに listed された欲求がある限り、Tool不要回答は禁止です。必ず1件以上の非破壊Toolを呼び出してください。")
         lines.append("")
         lines.append("### 現在深まっている欲求")
         for state in hungry_states:
-            cooldown_text = (
-                f"クールダウン中（残り約{state['cooldown_remaining_minutes']:.1f}分）"
-                if state["on_cooldown"]
-                else "行動可能"
-            )
             urgency = "重要" if state["is_critical"] else "通常"
             lines.extend(
                 [
                     (
                         f"- {state['label']}: status={state['status']:.3f}, "
-                        f"delta={state['delta']:.3f}, {urgency}, {cooldown_text}"
+                        f"delta={state['delta']:.3f}, drive_intensity={state['drive_intensity']:.3f}, {urgency}, 行動可能"
                     ),
                     f"  - 状態: {state['hunger']}",
                     f"  - 推奨Tool: {', '.join(state['recommended_tools'])}",
@@ -314,21 +338,18 @@ class SocialNeedsManager:
                 ]
             )
 
-        if ready_states:
-            primary = ready_states[0]
-            lines.extend(
-                [
-                    "",
-                    "### 今回の優先行動",
-                    (
-                        f"- 最優先は {primary['label']} です。"
-                        f"{primary['recommended_tools'][0]} を第一候補にして、自分で引数を決めて実行してください。"
-                    ),
-                    "- 特に探求欲が深い場合は、ユーザーに聞き返す前に自分で検索クエリを作り web_search を使ってください。",
-                ]
-            )
-        else:
-            lines.append("- すべてクールダウン中なので、今回の自律Tool行動は控えてください。")
+        primary = hungry_states[0]
+        lines.extend(
+            [
+                "",
+                "### 今回の優先行動",
+                (
+                    f"- 最優先は {primary['label']} です。"
+                    f"{primary['recommended_tools'][0]} を第一候補にして、自分で引数を決めて実行してください。"
+                ),
+                "- 特に探求欲が深い場合は、ユーザーに聞き返す前に self_development で自分のコードを読んだり、必要なら web_search で新しい情報を取りに行ってください。",
+            ]
+        )
 
         return "\n".join(lines)
 
@@ -338,6 +359,7 @@ class SocialNeedsManager:
                 "status": round(need.status, 6),
                 "value": round(need.value, 6),
                 "delta": round(need.delta, 6),
+                "drive_intensity": round(max(0.0, need.value - need.status), 6),
                 "decay_rate": need.decay_rate,
                 "last_updated_at": need.last_updated_at,
             }
@@ -494,11 +516,7 @@ class SocialNeedsManager:
 
     def _drive_state_for(self, key: str, need: NeedState) -> Dict[str, Any]:
         action = DRIVE_ACTIONS.get(key, {})
-        last_action = self._parse_time(self.drive_action_last_at.get(key, ""))
-        cooldown_remaining = 0.0
-        if last_action is not None:
-            elapsed_minutes = max((self._now() - last_action).total_seconds() / 60.0, 0.0)
-            cooldown_remaining = max(DRIVE_COOLDOWN_MINUTES - elapsed_minutes, 0.0)
+        drive_intensity = max(0.0, need.value - need.status)
 
         return {
             "key": key,
@@ -507,10 +525,11 @@ class SocialNeedsManager:
             "status": need.status,
             "value": need.value,
             "delta": need.delta,
+            "drive_intensity": drive_intensity,
             "should_act": need.delta <= DRIVE_ACTION_THRESHOLD + DRIVE_THRESHOLD_EPSILON,
             "is_critical": need.delta <= DRIVE_CRITICAL_THRESHOLD + DRIVE_THRESHOLD_EPSILON,
-            "on_cooldown": cooldown_remaining > 0.0,
-            "cooldown_remaining_minutes": cooldown_remaining,
+            "on_cooldown": False,
+            "cooldown_remaining_minutes": 0.0,
             "recommended_tools": list(action.get("recommended_tools", [])),
             "satisfaction": str(action.get("satisfaction", "")),
             "hunger": str(action.get("hunger", "")),

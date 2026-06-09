@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Python cache and build artifacts
 __pycache__/
 *.py[cod]
@@ -39,3 +40,8 @@ agent_data/social_needs.json
 Thumbs.db
 .vscode/
 .idea/
+=======
+/target/
+.env
+discord_tokens.json
+>>>>>>> d048c5d (feat: add notification, system info, screenshot, and window management tools)

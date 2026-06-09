@@ -2,18 +2,25 @@
 Direct AI invocation with a user-provided instruction.
 
 Usage:
-  .\\venv\\Scripts\\python run_ai.py --instruction "要件を書いて..."
-  .\\venv\\Scripts\\python run_ai.py --file instruction.txt
-  Get-Content instruction.txt | .\\venv\\Scripts\\python run_ai.py --stdin
+  .\\.venv\\Scripts\\python run_ai.py --instruction "俳句を作って"
+  .\\.venv\\Scripts\\python run_ai.py --file instruction.txt
+  Get-Content instruction.txt | .\\.venv\\Scripts\\python run_ai.py --stdin
 """
+from __future__ import annotations
+
 import argparse
 import logging
 import sys
 from pathlib import Path
 
+from agent.instruction_runner import InstructionRunner, format_result_for_cli
+from agent.logging_utils import configure_utf8_stdio
+
+configure_utf8_stdio()
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    force=True,
 )
 logger = logging.getLogger(__name__)
 
@@ -38,33 +45,17 @@ def load_instruction(args: argparse.Namespace) -> str:
 
 
 def main() -> int:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+    configure_utf8_stdio()
 
-    parser = build_parser()
-    args = parser.parse_args()
+    args = build_parser().parse_args()
     instruction_text = load_instruction(args)
 
     if not instruction_text:
         logger.error("Instruction text is empty.")
         return 1
 
-    from agent.memory import MemoryManager
-    from agent.cerebras_agent import ReActAgent
-
-    memory = MemoryManager()
-    agent = ReActAgent(memory)
-    result = agent.run_with_instruction(instruction_text)
-
-    print(result.get("answer") or result.get("reflect") or result.get("act") or result.get("status"))
-    if result.get("tasks"):
-        print("\nTasks:")
-        for task in result["tasks"]:
-            print(f"- {task.get('title', 'Unknown')} ({task.get('type', 'unknown')})")
-
+    result = InstructionRunner().chat(instruction_text)
+    print(format_result_for_cli(result))
     return 0 if result.get("status") != "failed" else 1
 
 

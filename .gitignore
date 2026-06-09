@@ -25,6 +25,7 @@ agent_data/logs/
 agent_data/archive/
 agent_data/task_outputs/
 agent_data/task_log.json
+agent_data/social_needs.json
 
 # OS / editor noise
 .DS_Store

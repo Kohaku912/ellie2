@@ -6,20 +6,22 @@ import signal
 import sys
 import time
 import logging
-from pathlib import Path
 
+from agent.logging_utils import configure_utf8_stdio, utf8_file_handler
 from config import LOG_LEVEL, LOG_DIR, AGENT_NAME
 from scheduler.scheduler import AutonomousAgentScheduler
 
 # Configure logging
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+configure_utf8_stdio()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_DIR / "agent.log"),
-        logging.StreamHandler()
-    ]
+        utf8_file_handler(LOG_DIR / "agent.log"),
+        logging.StreamHandler(sys.stdout)
+    ],
+    force=True,
 )
 logger = logging.getLogger(__name__)
 

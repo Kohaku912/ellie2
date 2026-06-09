@@ -3,6 +3,7 @@ Lightweight memory manager for the autonomous agent.
 Stores today's memory as short natural-language notes instead of JSON.
 """
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Any
 
@@ -15,12 +16,13 @@ from config import (
     ARCHIVE_DIR,
     MEMORY_DELETE_DAYS,
 )
+from agent.time_utils import date_str_local, hour_local, isoformat_local, now_local
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryManager:
-    """Manages short natural-language memory for the agent."""
+    """Manages today's natural-language memory for the agent."""
 
     def __init__(self):
         self.memory_file = MEMORY_FILE
@@ -29,14 +31,13 @@ class MemoryManager:
         self.memory_dir = MEMORY_DIR
         self.archive_dir = ARCHIVE_DIR
 
-        self.immediate: Dict[str, Any] = {}
         self.session = self._create_fresh_memory()
         self._load_session_memory()
 
     def _create_fresh_memory(self) -> Dict[str, Any]:
         """Create fresh in-memory state for the current day."""
         return {
-            "date": datetime.utcnow().strftime("%Y-%m-%d"),
+            "date": date_str_local(),
             "agent_name": AGENT_NAME,
             "daily_stats": {
                 "tasks_generated": 0,
@@ -132,9 +133,31 @@ class MemoryManager:
                 continue
 
             if in_notes_section and line.startswith("- "):
-                notes.append(line[2:].strip())
+                self._append_unique_note(notes, line[2:].strip(), max_notes=8)
 
         return notes[-8:]
+
+    def _normalize_note_key(self, note: str) -> str:
+        """Create a stable key for duplicate short-memory notes."""
+        normalized = " ".join(note.strip().split()).casefold()
+        normalized = re.sub(r"\d{4}-\d{2}-\d{2}(?:t|\s)\d{2}:\d{2}:\d{2}(?:\.\d+)?z?", "", normalized)
+        normalized = re.sub(r"\d{2}:\d{2}(?::\d{2})?", "", normalized)
+        return normalized.strip(" 。、,.")
+
+    def _append_unique_note(self, notes: List[str], note: str, max_notes: int = 8) -> bool:
+        """Append a note only when it is not already present."""
+        cleaned_note = " ".join(note.strip().split())
+        if not cleaned_note:
+            return False
+
+        existing_keys = {self._normalize_note_key(existing) for existing in notes}
+        note_key = self._normalize_note_key(cleaned_note)
+        if not note_key or note_key in existing_keys:
+            return False
+
+        notes.append(cleaned_note)
+        del notes[:-max_notes]
+        return True
 
     def _compose_memory_text(self) -> str:
         """Build the plain-text memory snapshot for disk."""
@@ -145,10 +168,10 @@ class MemoryManager:
             summary = "今日はまだ静かに様子を見ている。"
         else:
             summary = (
-                f"今日は {stats.get('tasks_generated', 0)} 件の候補を考え、"
-                f"{stats.get('tasks_executed', 0)} 件を実行し、"
-                f"{stats.get('tasks_completed', 0)} 件完了、"
-                f"{stats.get('tasks_failed', 0)} 件失敗した。"
+                f"今日は {stats.get('tasks_generated', 0)} 回の自律判断を行い、"
+                f"{stats.get('tasks_executed', 0)} 回ツールを使い、"
+                f"{stats.get('tasks_completed', 0)} 回成功し、"
+                f"{stats.get('tasks_failed', 0)} 回失敗した。"
             )
 
         lines = [
@@ -208,8 +231,8 @@ class MemoryManager:
         """Log a task execution and keep a brief AI-written note."""
         try:
             task_entry = {
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-                "hour": datetime.utcnow().hour,
+                "timestamp": isoformat_local(),
+                "hour": hour_local(),
                 **task,
             }
 
@@ -226,9 +249,8 @@ class MemoryManager:
             if "duration_ms" in task:
                 self.session["daily_stats"]["total_execution_time_ms"] += task["duration_ms"]
 
-            if memory_note.strip():
-                self.session["memory_notes"].append(memory_note.strip())
-                self.session["memory_notes"] = self.session["memory_notes"][-8:]
+            if memory_note.strip() and memory_note.strip().upper() != "NONE":
+                self._append_unique_note(self.session["memory_notes"], memory_note, max_notes=8)
 
             return self.save_memory()
         except Exception as error:
@@ -243,24 +265,49 @@ class MemoryManager:
         """Add a short insight or observation written by the AI."""
         try:
             cleaned_insight = " ".join(insight.strip().split())
-            if not cleaned_insight:
+            if not cleaned_insight or cleaned_insight.upper() == "NONE":
+                return True
+
+            if not self.should_store_memory_note(cleaned_insight):
+                return True
+
+            added = self._append_unique_note(self.session["memory_notes"], cleaned_insight, max_notes=8)
+            if not added:
                 return True
 
             insight_entry = {
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-                "hour": datetime.utcnow().hour,
+                "timestamp": isoformat_local(),
+                "hour": hour_local(),
                 "content": cleaned_insight,
             }
             self.session["today_insights"].append(insight_entry)
-            self.session["memory_notes"].append(cleaned_insight)
-            self.session["memory_notes"] = self.session["memory_notes"][-8:]
             return self.save_memory()
         except Exception as error:
             logger.error(f"Failed to add insight: {error}")
             return False
 
+    def should_store_memory_note(self, note: str) -> bool:
+        """Return whether a memory note adds new information worth storing."""
+        cleaned_note = " ".join(note.strip().split())
+        if not cleaned_note or cleaned_note.upper() == "NONE":
+            return False
+
+        candidate_key = self._normalize_note_key(cleaned_note)
+        if not candidate_key:
+            return False
+
+        existing_notes = [
+            *self.session.get("memory_notes", []),
+            *self.session.get("long_term_notes", []),
+        ]
+        for existing_note in existing_notes:
+            if candidate_key == self._normalize_note_key(existing_note):
+                return False
+
+        return True
+
     def update_task_generation_count(self, count: int) -> None:
-        """Update number of tasks generated."""
+        """Update autonomous run count."""
         self.session["daily_stats"]["tasks_generated"] += count
 
     def get_execution_history(self) -> List[Dict[str, Any]]:
@@ -278,14 +325,113 @@ class MemoryManager:
     def add_user_preference(self, key: str, value: Any) -> bool:
         """Store user preference."""
         try:
+            existing_preference = self.session.get("user_preferences", {}).get(key)
+            if isinstance(existing_preference, dict) and existing_preference.get("value") == value:
+                return True
+
             self.session["user_preferences"][key] = {
                 "value": value,
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": isoformat_local(),
             }
             return self.save_memory()
         except Exception as error:
             logger.error(f"Failed to add preference: {error}")
             return False
+
+    def remember_discord_voice_target(
+        self,
+        guild_id: str = "",
+        guild_name: str = "",
+        channel_id: str = "",
+        channel_name: str = "",
+    ) -> bool:
+        """Save the latest Discord voice target into today's memory as a short note."""
+        guild_id = self._normalize_optional_id(guild_id)
+        channel_id = self._normalize_optional_id(channel_id)
+        if not guild_id and not channel_id:
+            return False
+
+        note_parts = ["Discord通話先を覚えた"]
+        if guild_name.strip():
+            note_parts.append(f"guild={guild_name.strip()}")
+        if channel_name.strip():
+            note_parts.append(f"channel={channel_name.strip()}")
+        if guild_id:
+            note_parts.append(f"guild_id={guild_id}")
+        if channel_id:
+            note_parts.append(f"channel_id={channel_id}")
+
+        note = ": ".join([note_parts[0], ", ".join(note_parts[1:])]) if len(note_parts) > 1 else note_parts[0]
+        self.add_user_preference(
+            "discord_voice_target",
+            {
+                "guild_id": guild_id,
+                "guild_name": guild_name.strip(),
+                "channel_id": channel_id,
+                "channel_name": channel_name.strip(),
+            },
+        )
+        return self.add_insight(note)
+
+    def get_user_preference(self, key: str, default: Any = None) -> Any:
+        """Get a stored user preference value."""
+        preference = self.session.get("user_preferences", {}).get(key)
+        if isinstance(preference, dict):
+            return preference.get("value", default)
+        return default
+
+    def get_discord_voice_target(self) -> Dict[str, str]:
+        """Return the last known Discord voice target from memory if available."""
+        stored_target = self.get_user_preference("discord_voice_target", {})
+        if isinstance(stored_target, dict):
+            guild_id = self._normalize_optional_id(stored_target.get("guild_id"))
+            channel_id = self._normalize_optional_id(stored_target.get("channel_id"))
+            if guild_id or channel_id:
+                return {
+                    "guild_id": guild_id,
+                    "channel_id": channel_id,
+                    "guild_name": str(stored_target.get("guild_name") or "").strip(),
+                    "channel_name": str(stored_target.get("channel_name") or "").strip(),
+                    "source": "user_preference",
+                }
+
+        for note in reversed(self.session.get("memory_notes", [])):
+            target = self._extract_discord_voice_target_from_text(note)
+            if target:
+                target["source"] = "memory_note"
+                return target
+
+        for note in reversed(self.session.get("long_term_notes", [])):
+            target = self._extract_discord_voice_target_from_text(note)
+            if target:
+                target["source"] = "long_term_memory"
+                return target
+
+        return {}
+
+    def _extract_discord_voice_target_from_text(self, text: str) -> Dict[str, str]:
+        """Best-effort parse of guild/channel ids from natural-language memory text."""
+        if not text:
+            return {}
+
+        guild_id_match = re.search(r"guild_id[\"'\s:=：]+([0-9A-Za-z_-]+)", text, re.IGNORECASE)
+        channel_id_match = re.search(r"channel_id[\"'\s:=：]+([0-9A-Za-z_-]+)", text, re.IGNORECASE)
+        if not guild_id_match and not channel_id_match:
+            return {}
+
+        return {
+            "guild_id": self._normalize_optional_id(guild_id_match.group(1) if guild_id_match else ""),
+            "channel_id": self._normalize_optional_id(channel_id_match.group(1) if channel_id_match else ""),
+            "guild_name": "",
+            "channel_name": "",
+        }
+
+    def _normalize_optional_id(self, value: Any) -> str:
+        """Treat null-like strings as missing IDs."""
+        text = str(value or "").strip()
+        if text.lower() in {"null", "none", "undefined", "nil"}:
+            return ""
+        return text
 
     def get_memory_context(self) -> str:
         """Generate a compact natural-language context for the agent."""
@@ -295,9 +441,9 @@ class MemoryManager:
         context_lines = [
             "## 今日の状況",
             f"- 日付: {self.session.get('date', 'Unknown')}",
-            f"- 今日の候補数: {stats.get('tasks_generated', 0)}",
-            f"- 実行数: {stats.get('tasks_executed', 0)}",
-            f"- 完了: {stats.get('tasks_completed', 0)} / 失敗: {stats.get('tasks_failed', 0)}",
+            f"- 今日の自律判断数: {stats.get('tasks_generated', 0)}",
+            f"- ツール実行数: {stats.get('tasks_executed', 0)}",
+            f"- 成功: {stats.get('tasks_completed', 0)} / 失敗: {stats.get('tasks_failed', 0)}",
             "",
             "## ひとことメモ",
         ]
@@ -314,10 +460,43 @@ class MemoryManager:
 
         return "\n".join(context_lines)
 
+    def get_tool_memory_context(self) -> str:
+        """Generate a concise memory summary for tool selection and argument filling."""
+        stats = self.get_daily_stats()
+        notes = self.session.get("memory_notes", [])[-4:]
+        history = self.session.get("execution_history", [])[-3:]
+
+        lines = [
+            "## 今日の記憶",
+            f"- 日付: {self.session.get('date', 'Unknown')}",
+            f"- 自律判断数: {stats.get('tasks_generated', 0)}",
+            f"- ツール実行数: {stats.get('tasks_executed', 0)}",
+        ]
+
+        if notes:
+            lines.append("- 直近の記憶:")
+            lines.extend(f"  - {note}" for note in notes)
+
+        if history:
+            lines.append("- 直近の実行:")
+            for entry in history:
+                title = str(entry.get("title", "unknown"))
+                status = str(entry.get("status", "unknown"))
+                duration_ms = entry.get("duration_ms")
+                duration_text = f"{duration_ms}ms" if isinstance(duration_ms, int) else "unknown"
+                lines.append(f"  - {title} / {status} / {duration_text}")
+
+        long_term_notes = self.session.get("long_term_notes") or self._load_long_term_notes()
+        if long_term_notes:
+            lines.append("- 長期記憶:")
+            lines.extend(f"  - {note}" for note in long_term_notes[-3:])
+
+        return "\n".join(lines)
+
     def reset_daily_memory(self, long_term_note: str = "") -> bool:
         """Reset memory for a new day."""
         try:
-            today = datetime.utcnow().strftime("%Y-%m-%d")
+            today = date_str_local()
             archive_date = self.session.get("date") or today
 
             if self.memory_file.exists():
@@ -347,7 +526,7 @@ class MemoryManager:
     def _cleanup_old_archives(self) -> None:
         """Remove memory archives older than configured days."""
         try:
-            cutoff_date = datetime.utcnow() - timedelta(days=MEMORY_DELETE_DAYS)
+            cutoff_date = now_local().replace(tzinfo=None) - timedelta(days=MEMORY_DELETE_DAYS)
 
             for archive_file in self.archive_dir.glob("memory_*.md"):
                 try:

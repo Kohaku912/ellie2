@@ -21,9 +21,12 @@ from config import (
     CEREBRAS_API_KEY,
     CEREBRAS_BASE_URL,
     CEREBRAS_MODEL,
+    DEFAULT_OVERLAY_CLEAR_AFTER_MS,
     MAX_TOKENS,
     TEMPERATURE,
 )
+from agent.audit_log import get_audit_logger
+from agent.social_needs import SocialNeedsManager
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +90,7 @@ class AIResponse:
     tool_calls: List[ToolCallRequest] = field(default_factory=list)
     duration_ms: int = 0
     error: Optional[str] = None
+    call_id: Optional[str] = None
 
     def to_dict(self) -> JsonDict:
         """Return a JSON-serializable representation."""
@@ -105,6 +109,7 @@ class AIResponse:
             ],
             "duration_ms": self.duration_ms,
             "error": self.error,
+            "call_id": self.call_id,
         }
 
 
@@ -153,58 +158,150 @@ class InMemoryToolVectorStore:
 class ToolCallHandler:
     """Skeleton dispatcher for tool calls requested by the model."""
 
-    def handle(self, tool_call: ToolCallRequest) -> JsonDict:
+    def handle(
+        self,
+        tool_call: ToolCallRequest,
+        *,
+        audit_trace_id: Optional[str] = None,
+        audit_parent_id: Optional[str] = None,
+        audit_phase: str = "dispatch",
+    ) -> JsonDict:
+        from agent.tool_registry import PC_TOOL_NAMES
+        audit_logger = get_audit_logger()
+        start_time = time.time()
+
+        if tool_call.name in PC_TOOL_NAMES:
+            result = self._handle_pc_tool_call(tool_call.name, tool_call.arguments)
+            audit_logger.log_tool_call(
+                tool_name=tool_call.name,
+                trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
+                parent_id=audit_parent_id,
+                phase=audit_phase,
+                duration_ms=int((time.time() - start_time) * 1000),
+                status=result.get("status", "completed"),
+                request_payload={"tool_call": {"name": tool_call.name, "arguments": tool_call.arguments}},
+                response_payload=result,
+            )
+            return result
+
         handlers = {
-            "capture_screenshot": self._handle_capture_screenshot,
-            "launch_application": self._handle_launch_application,
+            "web_search": self._handle_web_search,
             "send_notification": self._handle_send_notification,
             "record_user_event": self._handle_record_user_event,
         }
 
         handler = handlers.get(tool_call.name)
         if handler is None:
-            return {
+            result = {
                 "status": "unsupported_tool",
                 "tool": tool_call.name,
                 "message": "No local handler is registered for this tool.",
             }
+            audit_logger.log_tool_call(
+                tool_name=tool_call.name,
+                trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
+                parent_id=audit_parent_id,
+                phase=audit_phase,
+                duration_ms=int((time.time() - start_time) * 1000),
+                status="unsupported_tool",
+                request_payload={"tool_call": {"name": tool_call.name, "arguments": tool_call.arguments}},
+                response_payload=result,
+            )
+            return result
 
         try:
-            return handler(tool_call.arguments)
+            result = handler(tool_call.arguments)
+            audit_logger.log_tool_call(
+                tool_name=tool_call.name,
+                trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
+                parent_id=audit_parent_id,
+                phase=audit_phase,
+                duration_ms=int((time.time() - start_time) * 1000),
+                status=result.get("status", "completed"),
+                request_payload={"tool_call": {"name": tool_call.name, "arguments": tool_call.arguments}},
+                response_payload=result,
+            )
+            return result
         except Exception as error:
             logger.error(f"Tool call failed: {tool_call.name}: {error}", exc_info=True)
-            return {
+            result = {
                 "status": "failed",
                 "tool": tool_call.name,
                 "error": str(error),
             }
+            audit_logger.log_tool_call(
+                tool_name=tool_call.name,
+                trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
+                parent_id=audit_parent_id,
+                phase=audit_phase,
+                duration_ms=int((time.time() - start_time) * 1000),
+                status="failed",
+                request_payload={"tool_call": {"name": tool_call.name, "arguments": tool_call.arguments}},
+                response_payload=result,
+                error=str(error),
+            )
+            return result
 
-    def _handle_capture_screenshot(self, arguments: JsonDict) -> JsonDict:
+    def _handle_pc_tool_call(self, tool_name: str, arguments: JsonDict) -> JsonDict:
         return {
             "status": "queued",
-            "action": "capture_screenshot",
-            "screen_id": arguments.get("screen_id", "primary"),
-            "reason": arguments.get("reason", ""),
-            "message": "Screenshot capture request parsed and queued for the device layer.",
-        }
-
-    def _handle_launch_application(self, arguments: JsonDict) -> JsonDict:
-        return {
-            "status": "queued",
-            "action": "launch_application",
-            "app_name": arguments.get("app_name", ""),
-            "path": arguments.get("path", ""),
-            "arguments": arguments.get("arguments", []),
-            "message": "Application launch request parsed and queued for the device layer.",
+            "target": "pc_client",
+            "tool_call": {
+                "type": "tool_call",
+                "tool": tool_name,
+                "arguments": arguments,
+            },
+            "message": "PC client tool call parsed and queued for WebSocket delivery.",
         }
 
     def _handle_send_notification(self, arguments: JsonDict) -> JsonDict:
+        title = str(arguments.get("title") or "Ellie").strip() or "Ellie"
+        body = str(arguments.get("body") or arguments.get("message") or "").strip()
+        display_text = f"{title}\n{body}" if body else title
         return {
             "status": "queued",
+            "target": "pc_client",
             "action": "send_notification",
-            "title": arguments.get("title", ""),
-            "message": arguments.get("message", ""),
+            "tool_call": {
+                "type": "tool_call",
+                "tool": "overlay_show",
+                "arguments": {
+                    "x": 24,
+                    "y": 24,
+                    "width": 640,
+                    "height": 180,
+                    "opacity": 230,
+                    "clear_after_ms": DEFAULT_OVERLAY_CLEAR_AFTER_MS,
+                    "items": [
+                        {
+                            "type": "rect",
+                            "x": 0,
+                            "y": 0,
+                            "width": 640,
+                            "height": 180,
+                            "color": "#101820",
+                            "fill": True,
+                        },
+                        {
+                            "type": "text",
+                            "text": display_text,
+                            "x": 24,
+                            "y": 24,
+                            "size": 28,
+                            "color": "#ffffff",
+                        },
+                    ],
+                },
+            },
+            "message": "Notification parsed and queued for PC overlay delivery.",
         }
+
+    def _handle_web_search(self, arguments: JsonDict) -> JsonDict:
+        from agent.web_search_tool import web_search
+
+        query = str(arguments.get("query") or "").strip()
+        max_results = arguments.get("max_results", 5)
+        return web_search(query, max_results=max_results)
 
     def _handle_record_user_event(self, arguments: JsonDict) -> JsonDict:
         return {
@@ -223,10 +320,17 @@ class DynamicToolRAGController:
         vector_store: Optional[ToolVectorStore] = None,
         tool_handler: Optional[ToolCallHandler] = None,
         client: Optional[Any] = None,
+        social_needs: Optional[SocialNeedsManager] = None,
     ):
-        self.vector_store = vector_store or InMemoryToolVectorStore(DEFAULT_TOOL_DEFINITIONS)
+        if vector_store is None:
+            from agent.tool_registry import DEFAULT_TOOL_DEFINITIONS
+
+            vector_store = InMemoryToolVectorStore(DEFAULT_TOOL_DEFINITIONS)
+
+        self.vector_store = vector_store
         self.tool_handler = tool_handler or ToolCallHandler()
         self.client = client
+        self.social_needs = social_needs
 
     def retrieve_relevant_tools(self, query: str, top_n: int = 5) -> List[ToolDefinition]:
         """Search the vector store for relevant tool definitions."""
@@ -237,13 +341,27 @@ class DynamicToolRAGController:
         retrieved = self.vector_store.search(query_text, top_n)
         return [item.definition for item in retrieved]
 
-    def call_ai_with_dynamic_tools(self, event_context: str, top_n: int = 5) -> AIResponse:
+    def call_ai_with_dynamic_tools(
+        self,
+        event_context: str,
+        memory_context: str = "",
+        top_n: int = 5,
+        audit_trace_id: Optional[str] = None,
+        audit_parent_id: Optional[str] = None,
+    ) -> AIResponse:
         """Call the LLM with only the retrieved tools for the current event."""
         start_time = time.time()
+        audit_logger = get_audit_logger()
+        call_id = audit_logger.new_id("dynamic-tool-ai")
+        trace_id = audit_trace_id or call_id
         try:
-            selected_tools = self.retrieve_relevant_tools(event_context, top_n)
+            retrieval_query = event_context
+            if memory_context.strip():
+                retrieval_query = f"{event_context.strip()}\n\n## 今日の記憶\n{memory_context.strip()}"
+
+            selected_tools = self.retrieve_relevant_tools(retrieval_query, top_n)
             tool_schemas = [tool.to_openai_tool() for tool in selected_tools]
-            messages = self._build_messages(event_context, selected_tools)
+            messages = self._build_messages(event_context, selected_tools, memory_context=memory_context)
 
             response = self._call_chat_completion(messages, tool_schemas)
             content = _extract_message_content(response)
@@ -255,8 +373,44 @@ class DynamicToolRAGController:
                     tool_calls = fallback_calls
                     content = self._strip_json_response_message(content) or content
 
+            audit_logger.log_ai_call(
+                call_type="dynamic_tool_rag",
+                trigger="event_context",
+                trace_id=trace_id,
+                parent_id=audit_parent_id,
+                call_id=call_id,
+                model=CEREBRAS_MODEL,
+                duration_ms=int((time.time() - start_time) * 1000),
+                status="tool_call_requested" if tool_calls else "completed",
+                request_payload={
+                    "messages": messages,
+                    "tools": tool_schemas,
+                    "memory_context": memory_context,
+                },
+                response_payload={
+                    "content": content,
+                    "tool_calls": [
+                        {
+                            "name": call.name,
+                            "arguments": call.arguments,
+                            "call_id": call.call_id,
+                        }
+                        for call in tool_calls
+                    ],
+                    "selected_tools": [tool.to_openai_tool()["function"] for tool in selected_tools],
+                },
+            )
+
             for tool_call in tool_calls:
-                tool_call.result = self.tool_handler.handle(tool_call)
+                tool_call.result = self.tool_handler.handle(
+                    tool_call,
+                    audit_trace_id=trace_id,
+                    audit_parent_id=call_id,
+                )
+                if tool_call.call_id and isinstance(tool_call.result, dict):
+                    outbound_call = tool_call.result.get("tool_call")
+                    if isinstance(outbound_call, dict) and "call_id" not in outbound_call:
+                        outbound_call["call_id"] = tool_call.call_id
 
             return AIResponse(
                 status="tool_call_requested" if tool_calls else "completed",
@@ -264,33 +418,72 @@ class DynamicToolRAGController:
                 selected_tools=selected_tools,
                 tool_calls=tool_calls,
                 duration_ms=int((time.time() - start_time) * 1000),
+                call_id=call_id,
             )
         except Exception as error:
             logger.error(f"Dynamic tool RAG call failed: {error}", exc_info=True)
+            audit_logger.log_ai_call(
+                call_type="dynamic_tool_rag",
+                trigger="event_context",
+                trace_id=trace_id,
+                parent_id=audit_parent_id,
+                call_id=call_id,
+                model=CEREBRAS_MODEL,
+                duration_ms=int((time.time() - start_time) * 1000),
+                status="failed",
+                request_payload={
+                    "event_context": event_context,
+                    "memory_context": memory_context,
+                    "top_n": top_n,
+                },
+                response_payload={"content": "", "tool_calls": [], "selected_tools": []},
+                error=str(error),
+            )
             return AIResponse(
                 status="failed",
                 content="",
                 selected_tools=[],
                 duration_ms=int((time.time() - start_time) * 1000),
                 error=str(error),
+                call_id=call_id,
             )
 
-    def _build_messages(self, event_context: str, selected_tools: Sequence[ToolDefinition]) -> List[JsonDict]:
+    def _build_messages(
+        self,
+        event_context: str,
+        selected_tools: Sequence[ToolDefinition],
+        memory_context: str = "",
+    ) -> List[JsonDict]:
         tool_names = ", ".join(tool.name for tool in selected_tools)
+        memory_block = ""
+        if memory_context.strip():
+            memory_block = f"""
+
+## 今日の記憶
+{memory_context.strip()}
+"""
         prompt = f"""
-## Event Context
+{memory_block}
+
+## 現在の状況
 {event_context.strip()}
 
-## Dynamic Tool Retrieval
-Only these tools were retrieved for this event: {tool_names}
+## 利用できるツール
+今回の状況に関連して取得されたツールは次のものだけです: {tool_names}
 
-If a tool is needed, request exactly the relevant tool call with valid JSON arguments.
-If no tool is needed, answer briefly with the reason.
+必要なら、本当に関係するツールだけを選び、妥当なJSON引数で呼び出してください。
+overlay_show / overlay_update を使う場合は、必ず正の clear_after_ms を入れてください。指定がなければ {DEFAULT_OVERLAY_CLEAR_AFTER_MS} を使ってください。
+不要なら、なぜ今は使わないのかを短く日本語で答えてください。
 """
         return [
-            {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+            {"role": "system", "content": self._build_system_prompt()},
             {"role": "user", "content": prompt},
         ]
+
+    def _build_system_prompt(self) -> str:
+        if self.social_needs is None:
+            return AGENT_SYSTEM_PROMPT
+        return self.social_needs.build_system_prompt(AGENT_SYSTEM_PROMPT)
 
     def _call_chat_completion(self, messages: List[JsonDict], tool_schemas: List[JsonDict]) -> Any:
         client = self._get_client()
@@ -327,13 +520,13 @@ If no tool is needed, answer briefly with the reason.
         fallback_instruction = {
             "role": "system",
             "content": (
-                "Tool calling is represented as JSON. When a tool is needed, return only JSON with "
-                "`message` and `tool_calls`, where each call has `name` and `arguments`."
+                "ツール呼び出しはJSONで表現してください。ツールが必要なときは `message` と `tool_calls` だけを返し、"
+                "各 tool_call には `name` と `arguments` を入れてください。ツール不要なら通常の日本語応答だけで構いません。"
             ),
         }
         tool_context = {
             "role": "user",
-            "content": "Available retrieved tools:\n" + json.dumps(tool_schemas, ensure_ascii=False, indent=2),
+            "content": "取得されたツール一覧:\n" + json.dumps(tool_schemas, ensure_ascii=False, indent=2),
         }
         return [messages[0], fallback_instruction, tool_context, *messages[1:]]
 
@@ -399,12 +592,22 @@ If no tool is needed, answer briefly with the reason.
 
 def retrieve_relevant_tools(query: str, top_n: int) -> List[ToolDefinition]:
     """Module-level helper for dynamic tool retrieval."""
-    return DEFAULT_CONTROLLER.retrieve_relevant_tools(query, top_n)
+    return _get_default_controller().retrieve_relevant_tools(query, top_n)
 
 
 def call_ai_with_dynamic_tools(event_context: str) -> AIResponse:
     """Module-level helper for event-driven AI calls."""
-    return DEFAULT_CONTROLLER.call_ai_with_dynamic_tools(event_context)
+    return _get_default_controller().call_ai_with_dynamic_tools(event_context)
+
+
+_DEFAULT_CONTROLLER: Optional[DynamicToolRAGController] = None
+
+
+def _get_default_controller() -> DynamicToolRAGController:
+    global _DEFAULT_CONTROLLER
+    if _DEFAULT_CONTROLLER is None:
+        _DEFAULT_CONTROLLER = DynamicToolRAGController()
+    return _DEFAULT_CONTROLLER
 
 
 def _tokenize(text: str) -> List[str]:
@@ -467,107 +670,3 @@ def _loads_json_object(text: str) -> Optional[JsonDict]:
         if isinstance(parsed, dict):
             return parsed
     return None
-
-
-DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
-    ToolDefinition(
-        name="capture_screenshot",
-        description="Capture a screenshot from the user's device when visual state is needed.",
-        tags=["screen", "screenshot", "display", "visual", "画面", "スクリーンショット", "撮影"],
-        examples=[
-            "ユーザーがスマホの画面をオンにした",
-            "画面の状態を確認したい",
-            "take a screenshot when the display changes",
-        ],
-        handler_name="capture_screenshot",
-        parameters={
-            "type": "object",
-            "properties": {
-                "screen_id": {
-                    "type": "string",
-                    "description": "Target screen identifier. Use primary when unknown.",
-                    "default": "primary",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Short reason why the screenshot is useful.",
-                },
-            },
-            "required": ["reason"],
-            "additionalProperties": False,
-        },
-    ),
-    ToolDefinition(
-        name="launch_application",
-        description="Launch an application or foreground a known app on the user's device.",
-        tags=["app", "application", "launch", "open", "アプリ", "起動", "開く"],
-        examples=[
-            "ユーザーが音楽を聴きたそうなのでアプリを起動する",
-            "open the browser app",
-            "アプリ起動が必要なイベント",
-        ],
-        handler_name="launch_application",
-        parameters={
-            "type": "object",
-            "properties": {
-                "app_name": {
-                    "type": "string",
-                    "description": "Human-readable application name.",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Optional executable path when available.",
-                },
-                "arguments": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional launch arguments.",
-                    "default": [],
-                },
-            },
-            "required": ["app_name"],
-            "additionalProperties": False,
-        },
-    ),
-    ToolDefinition(
-        name="send_notification",
-        description="Send a short notification to the user when the event needs attention.",
-        tags=["notify", "notification", "alert", "通知", "知らせる", "アラート"],
-        examples=[
-            "重要な変更をユーザーへ知らせる",
-            "send a reminder notification",
-        ],
-        handler_name="send_notification",
-        parameters={
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "Notification title."},
-                "message": {"type": "string", "description": "Notification body."},
-            },
-            "required": ["title", "message"],
-            "additionalProperties": False,
-        },
-    ),
-    ToolDefinition(
-        name="record_user_event",
-        description="Record a lightweight event summary for downstream systems.",
-        tags=["event", "log", "record", "history", "イベント", "記録"],
-        examples=[
-            "ユーザーがスマホの画面をオンにしたことを記録する",
-            "log a filtered terminal event",
-        ],
-        handler_name="record_user_event",
-        parameters={
-            "type": "object",
-            "properties": {
-                "event_type": {"type": "string", "description": "Machine-readable event type."},
-                "summary": {"type": "string", "description": "Short natural-language summary."},
-            },
-            "required": ["event_type", "summary"],
-            "additionalProperties": False,
-        },
-    ),
-]
-
-
-DEFAULT_CONTROLLER = DynamicToolRAGController()

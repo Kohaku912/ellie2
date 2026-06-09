@@ -1,397 +1,131 @@
-# Ellie - Autonomous AI Agent with Cerebras API
+# Ellie2
 
-## Overview
+Ellie2 is a local Japanese AI agent that can run as a daemon or answer a direct instruction from the command line. It keeps today's memory, long-term memory, a lightweight self-model, human-readable audit logs, and a persistent WebSocket bridge for PC-side tools.
 
-Ellie is a self-aware autonomous AI agent that runs 24/7 as a daemon. Every hour (9 AM - 9 PM UTC), it:
-1. **Thinks** - Analyzes the current context using the ReAct reasoning pattern
-2. **Plans** - Proposes task ideas only when they feel genuinely useful
-3. **Acts** - Executes one selected task, or intentionally does nothing
-4. **Reflects** - Records short insights and learning to external memory
+## Current Features
 
-The agent has **external memory** stored as a small natural-language note file that:
-- Persists throughout the day with brief updates
-- Automatically resets at midnight UTC
-- Archives previous days' notes
-- Stores only minimal summaries and recent observations
+- Direct instruction execution with `run_ai.py`
+- Daemon execution with `main.py`
+- Dynamic Tool Retrieval for selecting only relevant Tool schemas
+- Persistent PC Tool WebSocket bridge
+- Discord / PC tool operation through the bridge
+- Today's memory and selected long-term memory
+- Separate self-model files for stable identity and current self-state
+- Social need homeostasis with dynamic prompt injection
+- Local Web dashboard with read-only state view and AI chat
+- Markdown audit logs for AI calls and Tool calls
 
-## Features
-
-✨ **Autonomous Decision Making**: Uses ReAct (Reasoning + Acting) pattern for transparent thinking before action
-
-🧠 **External Memory**: Daily memory system with hourly updates and automatic nightly reset
-
-⏰ **Scheduled Execution**: Hourly task generation and execution (9 AM - 9 PM UTC, configurable)
-
-🛠️ **Task Execution**: 
-- File operations (create, read, analyze files)
-- Data analysis and reporting
-- Suggestion generation
-- Research and information gathering
-
-🧩 **Dynamic Tool Retrieval**: Retrieves only relevant tool schemas for an event before calling the AI
-
-📊 **Daily Analytics**: Automatic generation of daily reports with execution statistics
-
-🔧 **Easy Configuration**: `.env` file for API keys and settings
-
-## Project Structure
-
-```
-ellie2/
-├── agent/                    # Core reasoning engine
-│   ├── cerebras_agent.py    # ReAct agent with Cerebras API
-│   ├── dynamic_tool_rag.py   # Event-driven dynamic Tool RAG layer
-│   ├── memory.py            # Multi-layer memory management
-│   └── __init__.py
-├── scheduler/               # Execution scheduling
-│   ├── scheduler.py         # APScheduler configuration
-│   └── __init__.py
-├── tasks/                   # Task execution
-│   ├── task_executor.py     # Execute agent-decided tasks
-│   ├── tools.py             # Available tools
-│   └── __init__.py
-├── agent_data/              # Persistent storage
-│   ├── memory.json          # Today's memory (updated hourly)
-│   ├── task_log.json        # Task execution log
-│   ├── archive/             # Previous days' memories
-│   ├── logs/                # Execution and error logs
-│   └── task_outputs/        # Generated files
-├── main.py                  # Entry point (daemon)
-├── config.py                # Configuration management
-├── requirements.txt         # Python dependencies
-├── .env                     # API keys and settings
-├── .env.template            # Configuration template
-└── test_setup.py            # Setup verification tests
-```
-
-## Getting Started
-
-### 1. Prerequisites
-
-- Python 3.9+
-- Cerebras API key (from https://www.cerebras.ai)
-
-### 2. Installation
-
-```bash
-# Clone or navigate to project
-cd c:\Users\kohak\programs\ellie2
-
-# Create virtual environment
-python -m venv venv
-
-# Activate virtual environment
-# On Windows:
-.\venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### 3. Configuration
-
-```bash
-# Copy template and edit
-copy .env.template .env
-
-# Edit .env with your settings:
-# - Set CEREBRAS_API_KEY to your actual API key
-# - Adjust AGENT_START_HOUR and AGENT_END_HOUR if needed
-# - Customize AGENT_NAME if desired
-```
-
-### 4. Verify Setup
-
-```bash
-# Run verification tests
-.\venv\Scripts\python test_setup.py
-
-# Expected output: ✓ All tests passed! System is ready to run.
-```
-
-### 5. Run the Agent
-
-```bash
-# Start as foreground daemon
-.\venv\Scripts\python main.py
-
-# Or run in background (use Ctrl+C to stop)
-```
-
-### 6. Call Ellie with an instruction
+## Setup
 
 ```powershell
-# Inline instruction
-.\venv\Scripts\python run_ai.py --instruction "このフォルダの構成を簡単に要約して"
-
-# Read from file
-.\venv\Scripts\python run_ai.py --file instruction.txt
-
-# Read from stdin
-Get-Content instruction.txt | .\venv\Scripts\python run_ai.py --stdin
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.txt
+Copy-Item .env.template .env
 ```
 
-## Event-Driven Dynamic Tool RAG
+Set `CEREBRAS_API_KEY` in `.env`.
 
-`agent/dynamic_tool_rag.py` implements the backend control layer for event-driven tool calling.
-
-- `ToolDefinition`: JSON Schema based tool metadata passed to the LLM only after retrieval
-- `InMemoryToolVectorStore`: mock vector database using lightweight token cosine similarity
-- `retrieve_relevant_tools(query, top_n)`: searches the tool store for the current event context
-- `call_ai_with_dynamic_tools(event_context)`: retrieves tools, calls Chat Completion, parses tool calls, and returns handler results
-- `ToolCallHandler`: skeleton dispatcher for actions such as screenshot capture and app launch
-
-Example:
-
-```python
-from agent.dynamic_tool_rag import call_ai_with_dynamic_tools, retrieve_relevant_tools
-
-tools = retrieve_relevant_tools("ユーザーがスマホの画面をオンにした", top_n=3)
-print([tool.name for tool in tools])
-
-response = call_ai_with_dynamic_tools("ユーザーがスマホの画面をオンにした")
-print(response.to_dict())
-```
-
-## Memory Structure
-
-The agent keeps a short natural-language memory file (`agent_data/memory.md`) with:
-- one-line summary of the day
-- a few recent notes
-
-It also keeps durable notes in `agent_data/long_term_memory.md`. At the daily reset, Ellie asks the AI to judge whether anything from the day is worth keeping permanently. Only that selected sentence is copied into long-term memory; ordinary daily notes are archived and later cleaned up.
-
-Example:
-
-```md
-# Ellie の今日の記憶
-日付: 2026-06-08
-ひとこと: 今日は新しいタスクを作らず、静かに見送った。
-
-## 今日のメモ
-- ユーザーは毎回タスクを出さなくてよい。
-- 記憶は短い自然文だけにする。
-```
-
-### Memory Lifecycle
-
-1. **00:00 UTC**: AI judges whether anything should become long-term memory, then previous day's memory is archived
-2. **Hourly (9-21 UTC)**: Memory updated with short natural-language notes
-3. **30+ days**: Old archives automatically cleaned up
-
-## Configuration Options
-
-Edit `.env` to customize:
-
-```env
-# API Configuration
-CEREBRAS_API_KEY=your_key_here           # Your Cerebras API key
-CEREBRAS_BASE_URL=https://api.cerebras.ai/v1
-CEREBRAS_MODEL=claude-3-5-sonnet
-
-# Agent Behavior
-AGENT_NAME=Ellie                         # Agent's name
-AGENT_TIMEZONE=UTC                       # Timezone for scheduling
-AGENT_START_HOUR=9                       # Start hour (UTC)
-AGENT_END_HOUR=21                        # End hour (UTC)
-
-# Storage
-MEMORY_DIR=./agent_data
-LOG_DIR=./agent_data/logs
-ARCHIVE_DIR=./agent_data/archive
-
-# Logging
-LOG_LEVEL=INFO                           # DEBUG, INFO, WARNING, ERROR
-```
-
-## Usage Examples
-
-### Running the daemon
-
-```bash
-# Foreground mode (shows all logs)
-.\venv\Scripts\python main.py
-
-# Background mode (using Windows Task Scheduler - see below)
-```
-
-### Monitoring execution
-
-```bash
-# Watch logs in real-time
-Get-Content -Path agent_data/logs/execution.log -Wait
-
-# Check memory state
-Get-Content agent_data/memory.md
-```
-
-### Accessing task outputs
-
-```bash
-# Find generated files
-dir agent_data/task_outputs/
-
-# View daily report
-Get-Content agent_data/task_outputs/daily_report_YYYYMMDD.md
-```
-
-## Setting Up Persistent Execution
-
-### Option 1: Windows Task Scheduler
+## Direct Instruction
 
 ```powershell
-# Create a task to run at startup
-$action = New-ScheduledTaskAction `
-  -Execute "C:\Users\kohak\programs\ellie2\venv\Scripts\python.exe" `
-  -Argument "main.py" `
-  -WorkingDirectory "C:\Users\kohak\programs\ellie2"
-
-$trigger = New-ScheduledTaskTrigger -AtStartup
-
-Register-ScheduledTask `
-  -TaskName "Ellie AI Agent" `
-  -Action $action `
-  -Trigger $trigger `
-  -RunLevel Highest `
-  -User "System"
+.\.venv\Scripts\python run_ai.py --instruction "俳句を作って"
 ```
 
-### Option 2: Background Job
+You can also pass a file or stdin:
 
 ```powershell
-# In a PowerShell terminal, create a background job
-Start-Job -FilePath C:\Users\kohak\programs\ellie2\start_agent.ps1
+.\.venv\Scripts\python run_ai.py --file instruction.txt
+Get-Content instruction.txt | .\.venv\Scripts\python run_ai.py --stdin
 ```
 
-Create `start_agent.ps1`:
+## Daemon
+
 ```powershell
-Set-Location C:\Users\kohak\programs\ellie2
-.\venv\Scripts\python main.py
+.\.venv\Scripts\python main.py
 ```
 
-## API Integration
+The daemon starts the scheduler, keeps the PC Tool WebSocket bridge available, runs periodic autonomous checks, and resets daily memory.
 
-### Cerebras API Structure
+## Web Dashboard
 
-The agent uses Cerebras API (Claude-compatible endpoint) for reasoning:
-
-```python
-# In config.py
-CEREBRAS_API_KEY = "your_api_key"
-CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
-CEREBRAS_MODEL = "claude-3-5-sonnet"
+```powershell
+.\.venv\Scripts\python web_server.py
 ```
 
-### System Prompt
+Open `http://127.0.0.1:8080`. The dashboard is localhost-only, shows read-only agent state, and lets you chat with Ellie through the same instruction path as `run_ai.py`.
 
-The agent receives a system prompt that:
-1. Establishes its identity as "Ellie"
-2. Defines the ReAct reasoning process
-3. Outlines available tools
-4. Sets behavioral guidelines
+Optional environment variables:
 
-See `config.py` for the full system prompt.
-
-## Troubleshooting
-
-### Issue: "CEREBRAS_API_KEY not set"
-
-**Solution**: Make sure `.env` file is in the project root and contains your API key:
-```bash
-cat .env | findstr CEREBRAS_API_KEY
+```text
+WEB_HOST=127.0.0.1
+WEB_PORT=8080
 ```
 
-### Issue: "No module named 'anthropic'"
+## PC Tool Bridge
 
-**Solution**: Ensure virtual environment is activated:
-```bash
-.\venv\Scripts\activate
-pip install -r requirements.txt
+The PC-side server/client should connect to the local WebSocket bridge at:
+
+```text
+ws://127.0.0.1:8765
 ```
 
-### Issue: Tasks not executing
+Ellie sends messages shaped like:
 
-**Solution**: Check logs:
-```bash
-Get-Content agent_data/logs/execution.log -Tail 20
-Get-Content agent_data/logs/errors.log -Tail 20
+```json
+{
+  "type": "tool_call",
+  "call_id": "example-call-id",
+  "tool": "example_tool",
+  "arguments": {}
+}
 ```
 
-### Issue: Memory not persisting between runs
+The PC side should respond with:
 
-**Solution**: Verify `agent_data/` directory exists and memory file is being created:
-```bash
-dir agent_data/
-Get-Content agent_data/memory.md
+```json
+{
+  "type": "tool_result",
+  "call_id": "example-call-id",
+  "ok": true,
+  "result": {
+    "data": {}
+  }
+}
 ```
 
-## Performance Metrics
+## Important Files
 
-Typical hourly execution:
-- **API call time**: 2-5 seconds
-- **Task execution time**: 1-3 seconds  
-- **Memory footprint**: ~50-100 MB
-- **Total hourly time**: ~5-10 seconds
+- `main.py`: daemon entrypoint
+- `run_ai.py`: direct instruction entrypoint
+- `web_server.py`: local dashboard and chat server
+- `config.py`: environment and file path configuration
+- `agent/cerebras_agent.py`: AI call orchestration
+- `agent/instruction_runner.py`: shared direct-instruction runner for CLI and Web chat
+- `agent/dynamic_tool_rag.py`: Dynamic Tool Retrieval and Tool Calling layer
+- `agent/tool_registry.py`: available Tool schemas
+- `agent/pc_tool_bridge.py`: persistent PC Tool bridge
+- `agent/memory.py`: today's memory and long-term memory
+- `agent/self_model.py`: self-model and current self-state
+- `agent/social_needs.py`: social need state and dynamic prompt injection
+- `agent/audit_log.py`: human-readable audit logging
+- `scheduler/scheduler.py`: periodic jobs
 
-The agent runs only 12 hours daily (9-21 UTC), making it lightweight and efficient.
+## Runtime Data
 
-## Architecture Highlights
+- `agent_data/memory.md`: today's memory
+- `agent_data/long_term_memory.md`: selected durable memory
+- `agent_data/self.md`: stable self-model
+- `agent_data/state.md`: current self-state
+- `agent_data/social_needs.json`: internal social need state
+- `agent_data/logs/`: audit and runtime logs
+- `agent_data/archive/`: archived daily memory
 
-### ReAct Pattern
+`agent_data/logs/`, `agent_data/archive/`, `agent_data/social_needs.json`, and generated task outputs are ignored by Git.
 
+## Validation
+
+```powershell
+.\.venv\Scripts\python -m compileall -q main.py run_ai.py web_server.py config.py agent scheduler tasks
+.\.venv\Scripts\python -m py_compile web_server.py agent\instruction_runner.py
+.\.venv\Scripts\python run_ai.py --instruction "俳句を作って"
 ```
-【Think】         → Analyze context and past actions
-   ↓
-【Plan】         → Generate 1-3 task options
-   ↓
-【Act】          → Execute selected task (file I/O, analysis, etc.)
-   ↓
-【Reflect】      → Record results and insights to memory
-```
-
-### Memory Layers
-
-1. **Immediate**: In-process (current execution context)
-2. **Session**: Today's JSON file (persisted hourly)
-3. **Archive**: Previous days' snapshots (cleanup after 30 days)
-4. **Summary**: Compressed old memories (for context)
-
-### Task Types
-
-- **file_operation**: Create, read, modify files
-- **data_analysis**: Analyze execution data, generate reports
-- **suggestion**: Generate improvement suggestions
-- **research**: Information gathering and research
-- **generic**: Analysis and thinking tasks
-
-## Future Enhancements
-
-- [ ] Web search integration
-- [ ] Database support
-- [ ] Multi-user support
-- [ ] Dashboard/Web UI
-- [ ] Slack integration
-- [ ] Advanced long-term learning (beyond 30 days)
-- [ ] Parallel task execution
-- [ ] Custom tool registration API
-
-## Support
-
-For issues or questions:
-1. Check logs in `agent_data/logs/`
-2. Review memory file in `agent_data/memory.md`
-3. Run `test_setup.py` to verify installation
-4. Check Cerebras API status and usage
-
-## License
-
-This project is for personal use. Ensure you comply with Cerebras API terms of service.
-
-## Notes
-
-- Agent runs in UTC timezone (configurable)
-- All timestamps are in ISO 8601 format with Z suffix
-- Memory is reset daily at 00:00 UTC (configurable)
-- Agent respects working hours (9-21 UTC default)
-- Task execution is sequential (one per hour)
-- API calls are logged for cost tracking

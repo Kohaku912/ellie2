@@ -10,28 +10,32 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
+import subprocess
 import time
+import base64
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 from config import (
     AGENT_SYSTEM_PROMPT,
-    CEREBRAS_API_KEY,
-    CEREBRAS_BASE_URL,
     CEREBRAS_MODEL,
     DEFAULT_OVERLAY_CLEAR_AFTER_MS,
     MAX_TOKENS,
     TEMPERATURE,
 )
 from agent.audit_log import get_audit_logger
+from agent.llm_router import LLMRouter
 from agent.social_needs import SocialNeedsManager
 
 logger = logging.getLogger(__name__)
 
 
 JsonDict = Dict[str, Any]
+MANDATORY_CORE_TOOL_NAMES = ("web_search", "read_file_base64", "self_development", "execute_shell")
 
 
 @dataclass(frozen=True)
@@ -160,7 +164,7 @@ class ToolCallHandler:
 
     def handle(
         self,
-        tool_call: ToolCallRequest,
+        tool_call: ToolCallRequest | Dict[str, Any],
         *,
         audit_trace_id: Optional[str] = None,
         audit_parent_id: Optional[str] = None,
@@ -170,42 +174,33 @@ class ToolCallHandler:
         from agent.tool_registry import PC_TOOL_NAMES
         audit_logger = get_audit_logger()
         start_time = time.time()
+        normalized_call = self._normalize_tool_call(tool_call)
 
-        if tool_call.name.startswith("xmcp__"):
-            result = self._handle_xmcp_tool_call(tool_call.name, tool_call.arguments)
+        if normalized_call.name.startswith("playwright__"):
+            result = self._handle_playwright_tool_call(normalized_call.name, normalized_call.arguments)
             audit_logger.log_tool_call(
-                tool_name=tool_call.name,
+                tool_name=normalized_call.name,
                 trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
                 parent_id=audit_parent_id,
                 phase=audit_phase,
                 duration_ms=int((time.time() - start_time) * 1000),
                 status=result.get("status", "completed"),
-                request_payload={"tool_call": {"name": tool_call.name, "arguments": tool_call.arguments}},
+                request_payload={"tool_call": {"name": normalized_call.name, "arguments": normalized_call.arguments}},
                 response_payload=result,
                 error=result.get("error"),
             )
             return result
 
-        connected_pc_tool_names = set(get_connected_pc_tool_names())
-        if tool_call.name in PC_TOOL_NAMES or tool_call.name in connected_pc_tool_names:
-            result = self._handle_pc_tool_call(tool_call.name, tool_call.arguments)
-            audit_logger.log_tool_call(
-                tool_name=tool_call.name,
-                trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
-                parent_id=audit_parent_id,
-                phase=audit_phase,
-                duration_ms=int((time.time() - start_time) * 1000),
-                status=result.get("status", "completed"),
-                request_payload={"tool_call": {"name": tool_call.name, "arguments": tool_call.arguments}},
-                response_payload=result,
-            )
-            return result
-
         handlers = {
             "web_search": self._handle_web_search,
+            "read_file_base64": self._handle_read_file_base64,
+            "list_directory": self._handle_list_directory,
+            "execute_shell": self._handle_execute_shell,
             "creative_expression": self._handle_creative_expression,
             "self_development": self._handle_self_development,
             "social_feedback_check": self._handle_social_feedback_check,
+            "twitter_post": self._handle_twitter_post,
+            "twitter_profile_edit": self._handle_twitter_profile_edit,
             "schedule_self_call": self._handle_schedule_self_call,
             "create_long_term_goal": self._handle_create_long_term_goal,
             "update_long_term_goal": self._handle_update_long_term_goal,
@@ -213,57 +208,85 @@ class ToolCallHandler:
             "record_user_event": self._handle_record_user_event,
         }
 
-        handler = handlers.get(tool_call.name)
-        if handler is None:
-            result = {
-                "status": "unsupported_tool",
-                "tool": tool_call.name,
-                "message": "No local handler is registered for this tool.",
-            }
-            audit_logger.log_tool_call(
-                tool_name=tool_call.name,
-                trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
-                parent_id=audit_parent_id,
-                phase=audit_phase,
-                duration_ms=int((time.time() - start_time) * 1000),
-                status="unsupported_tool",
-                request_payload={"tool_call": {"name": tool_call.name, "arguments": tool_call.arguments}},
-                response_payload=result,
-            )
-            return result
+        connected_pc_tool_names = set(get_connected_pc_tool_names())
+        if normalized_call.name in handlers:
+            handler = handlers[normalized_call.name]
+            try:
+                result = handler(normalized_call.arguments)
+                audit_logger.log_tool_call(
+                    tool_name=normalized_call.name,
+                    trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
+                    parent_id=audit_parent_id,
+                    phase=audit_phase,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    status=result.get("status", "completed"),
+                    request_payload={"tool_call": {"name": normalized_call.name, "arguments": normalized_call.arguments}},
+                    response_payload=result,
+                )
+                return result
+            except Exception as error:
+                logger.error(f"Tool call failed: {normalized_call.name}: {error}", exc_info=True)
+                result = {
+                    "status": "failed",
+                    "tool": normalized_call.name,
+                    "error": str(error),
+                }
+                audit_logger.log_tool_call(
+                    tool_name=normalized_call.name,
+                    trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
+                    parent_id=audit_parent_id,
+                    phase=audit_phase,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    status="failed",
+                    request_payload={"tool_call": {"name": normalized_call.name, "arguments": normalized_call.arguments}},
+                    response_payload=result,
+                    error=str(error),
+                )
+                return result
 
-        try:
-            result = handler(tool_call.arguments)
+        if normalized_call.name in PC_TOOL_NAMES or normalized_call.name in connected_pc_tool_names:
+            result = self._handle_pc_tool_call(normalized_call.name, normalized_call.arguments)
             audit_logger.log_tool_call(
-                tool_name=tool_call.name,
+                tool_name=normalized_call.name,
                 trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
                 parent_id=audit_parent_id,
                 phase=audit_phase,
                 duration_ms=int((time.time() - start_time) * 1000),
                 status=result.get("status", "completed"),
-                request_payload={"tool_call": {"name": tool_call.name, "arguments": tool_call.arguments}},
+                request_payload={"tool_call": {"name": normalized_call.name, "arguments": normalized_call.arguments}},
                 response_payload=result,
             )
             return result
-        except Exception as error:
-            logger.error(f"Tool call failed: {tool_call.name}: {error}", exc_info=True)
-            result = {
-                "status": "failed",
-                "tool": tool_call.name,
-                "error": str(error),
-            }
-            audit_logger.log_tool_call(
-                tool_name=tool_call.name,
-                trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
-                parent_id=audit_parent_id,
-                phase=audit_phase,
-                duration_ms=int((time.time() - start_time) * 1000),
-                status="failed",
-                request_payload={"tool_call": {"name": tool_call.name, "arguments": tool_call.arguments}},
-                response_payload=result,
-                error=str(error),
-            )
-            return result
+
+        result = {
+            "status": "unsupported_tool",
+            "tool": normalized_call.name,
+            "message": "No local handler is registered for this tool.",
+        }
+        audit_logger.log_tool_call(
+            tool_name=normalized_call.name,
+            trace_id=audit_trace_id or audit_logger.new_id("tool-dispatch"),
+            parent_id=audit_parent_id,
+            phase=audit_phase,
+            duration_ms=int((time.time() - start_time) * 1000),
+            status="unsupported_tool",
+            request_payload={"tool_call": {"name": normalized_call.name, "arguments": normalized_call.arguments}},
+            response_payload=result,
+        )
+        return result
+
+
+    def _normalize_tool_call(self, tool_call: ToolCallRequest | Dict[str, Any]) -> ToolCallRequest:
+        if isinstance(tool_call, ToolCallRequest):
+            return tool_call
+        if isinstance(tool_call, dict):
+            name = str(tool_call.get("name") or tool_call.get("tool") or "").strip()
+            arguments = tool_call.get("arguments") or {}
+            if not isinstance(arguments, dict):
+                arguments = _parse_arguments(arguments)
+            call_id = str(tool_call.get("call_id") or tool_call.get("id") or "").strip() or None
+            return ToolCallRequest(name=name, arguments=arguments, call_id=call_id)
+        raise TypeError(f"Unsupported tool_call type: {type(tool_call)!r}")
 
     def _handle_pc_tool_call(self, tool_name: str, arguments: JsonDict) -> JsonDict:
         return {
@@ -276,11 +299,6 @@ class ToolCallHandler:
             },
             "message": "PC client tool call parsed and queued for WebSocket delivery.",
         }
-
-    def _handle_xmcp_tool_call(self, tool_name: str, arguments: JsonDict) -> JsonDict:
-        from agent.mcp_client import call_xmcp_tool
-
-        return call_xmcp_tool(tool_name, arguments)
 
     def _handle_send_notification(self, arguments: JsonDict) -> JsonDict:
         title = str(arguments.get("title") or "Ellie").strip() or "Ellie"
@@ -331,6 +349,77 @@ class ToolCallHandler:
         max_results = arguments.get("max_results", 5)
         return web_search(query, max_results=max_results)
 
+    def _handle_read_file_base64(self, arguments: JsonDict) -> JsonDict:
+        path_text = str(arguments.get("path") or "").strip()
+        if not path_text:
+            return {"status": "failed", "tool": "read_file_base64", "error": "path is required"}
+        target = Path(path_text)
+        if not target.exists() or not target.is_file():
+            return {"status": "failed", "tool": "read_file_base64", "error": "file not found", "path": path_text}
+        data = target.read_bytes()
+        return {
+            "status": "completed",
+            "tool": "read_file_base64",
+            "path": str(target),
+            "data_base64": base64.b64encode(data).decode("ascii"),
+            "size": len(data),
+        }
+
+    def _handle_list_directory(self, arguments: JsonDict) -> JsonDict:
+        path_text = str(arguments.get("path") or ".").strip()
+        target = Path(path_text)
+        if not target.exists() or not target.is_dir():
+            return {"status": "failed", "tool": "list_directory", "error": "directory not found", "path": path_text}
+        entries = []
+        for child in sorted(target.iterdir(), key=lambda item: item.name.casefold())[:200]:
+            entries.append(
+                {
+                    "name": child.name,
+                    "path": str(child),
+                    "is_dir": child.is_dir(),
+                    "size": child.stat().st_size if child.is_file() else None,
+                }
+            )
+        return {
+            "status": "completed",
+            "tool": "list_directory",
+            "path": str(target),
+            "entries": entries,
+        }
+
+    def _handle_execute_shell(self, arguments: JsonDict) -> JsonDict:
+        command_text = str(arguments.get("command") or arguments.get("cmd") or "").strip()
+        timeout_seconds = max(1, int(arguments.get("timeout_seconds") or 60))
+        workdir = str(arguments.get("workdir") or os.getcwd()).strip() or os.getcwd()
+        if not command_text:
+            return {"status": "failed", "tool": "execute_shell", "error": "command is required"}
+        process = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                command_text,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            cwd=workdir,
+        )
+        ok = process.returncode == 0
+        return {
+            "status": "completed" if ok else "failed",
+            "tool": "execute_shell",
+            "command": command_text,
+            "workdir": workdir,
+            "exit_code": process.returncode,
+            "stdout": process.stdout[-12000:],
+            "stderr": process.stderr[-12000:],
+        }
+
     def _handle_creative_expression(self, arguments: JsonDict) -> JsonDict:
         from agent.autonomous_tools import creative_expression
 
@@ -345,6 +434,21 @@ class ToolCallHandler:
         from agent.autonomous_tools import social_feedback_check
 
         return social_feedback_check(arguments)
+
+    def _handle_twitter_post(self, arguments: JsonDict) -> JsonDict:
+        from agent.autonomous_tools import twitter_post
+
+        return twitter_post(arguments)
+
+    def _handle_twitter_profile_edit(self, arguments: JsonDict) -> JsonDict:
+        from agent.autonomous_tools import twitter_profile_edit
+
+        return twitter_profile_edit(arguments)
+
+    def _handle_playwright_tool_call(self, tool_name: str, arguments: JsonDict) -> JsonDict:
+        from agent.playwright_mcp import call_playwright_tool
+
+        return call_playwright_tool(tool_name, arguments)
 
     def _handle_schedule_self_call(self, arguments: JsonDict) -> JsonDict:
         from agent.autonomy_runtime import enqueue_self_call
@@ -392,6 +496,7 @@ class DynamicToolRAGController:
         tool_handler: Optional[ToolCallHandler] = None,
         client: Optional[Any] = None,
         social_needs: Optional[SocialNeedsManager] = None,
+        llm_router: Optional[LLMRouter] = None,
     ):
         if vector_store is None:
             from agent.tool_registry import get_available_tool_definitions
@@ -402,6 +507,7 @@ class DynamicToolRAGController:
         self.tool_handler = tool_handler or ToolCallHandler()
         self.client = client
         self.social_needs = social_needs
+        self.llm_router = llm_router or LLMRouter()
 
     def retrieve_relevant_tools(self, query: str, top_n: int = 5) -> List[ToolDefinition]:
         """Search the vector store for relevant tool definitions."""
@@ -410,7 +516,8 @@ class DynamicToolRAGController:
             raise ValueError("query must not be empty")
 
         retrieved = self.vector_store.search(query_text, top_n)
-        return [item.definition for item in retrieved]
+        selected = [item.definition for item in retrieved]
+        return self._merge_mandatory_core_tools(selected)
 
     def call_ai_with_dynamic_tools(
         self,
@@ -419,6 +526,7 @@ class DynamicToolRAGController:
         top_n: int = 5,
         audit_trace_id: Optional[str] = None,
         audit_parent_id: Optional[str] = None,
+        task_type: str = "light",
     ) -> AIResponse:
         """Call the LLM with only the retrieved tools for the current event."""
         start_time = time.time()
@@ -434,9 +542,47 @@ class DynamicToolRAGController:
             tool_schemas = [tool.to_openai_tool() for tool in selected_tools]
             messages = self._build_messages(event_context, selected_tools, memory_context=memory_context)
 
-            response = self._call_chat_completion(messages, tool_schemas)
-            content = _extract_message_content(response)
-            tool_calls = self._parse_tool_calls(response)
+            response = self._call_chat_completion(messages, tool_schemas, task_type=task_type)
+            if response.error:
+                error_message = str(response.error or "LLM request failed")
+                logger.warning("Dynamic tool call rate limited: %s", error_message)
+                audit_logger.log_ai_call(
+                    call_type="dynamic_tool_rag",
+                    trigger="event_context",
+                    trace_id=trace_id,
+                    parent_id=audit_parent_id,
+                    call_id=call_id,
+                    model=response.model or CEREBRAS_MODEL,
+                    provider=response.provider,
+                    reasoning_profile=task_type,
+                    reasoning_effort=response.reasoning_effort,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    status="failed",
+                    request_payload={
+                        "messages": messages,
+                        "tools": tool_schemas,
+                        "memory_context": memory_context,
+                    },
+                    response_payload={
+                        "content": response.content,
+                        "tool_calls": response.tool_calls,
+                        "selected_tools": [tool.to_openai_tool()["function"] for tool in selected_tools],
+                        "thinking_text": response.thinking_text,
+                        "error": error_message,
+                    },
+                    error=error_message,
+                )
+                return AIResponse(
+                    status="rate_limited",
+                    content="いまAIが混雑しているので、少し時間をおいてもう一度試してください。",
+                    selected_tools=selected_tools,
+                    tool_calls=[],
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    error=error_message,
+                    call_id=call_id,
+                )
+            content = response.content
+            tool_calls = self._tool_calls_from_result(response)
 
             if not tool_calls:
                 fallback_calls = self._parse_prompt_tool_calls(content, selected_tools)
@@ -450,7 +596,10 @@ class DynamicToolRAGController:
                 trace_id=trace_id,
                 parent_id=audit_parent_id,
                 call_id=call_id,
-                model=CEREBRAS_MODEL,
+                model=response.model or CEREBRAS_MODEL,
+                provider=response.provider,
+                reasoning_profile=task_type,
+                reasoning_effort=response.reasoning_effort,
                 duration_ms=int((time.time() - start_time) * 1000),
                 status="tool_call_requested" if tool_calls else "completed",
                 request_payload={
@@ -460,6 +609,7 @@ class DynamicToolRAGController:
                 },
                 response_payload={
                     "content": content,
+                    "thinking_text": response.thinking_text,
                     "tool_calls": [
                         {
                             "name": call.name,
@@ -500,6 +650,8 @@ class DynamicToolRAGController:
                 parent_id=audit_parent_id,
                 call_id=call_id,
                 model=CEREBRAS_MODEL,
+                provider="cerebras",
+                reasoning_profile=task_type,
                 duration_ms=int((time.time() - start_time) * 1000),
                 status="failed",
                 request_payload={
@@ -542,8 +694,11 @@ class DynamicToolRAGController:
 
 ## 利用できるツール
 今回の状況に関連して取得されたツールは次のものだけです: {tool_names}
+また、調査・編集・実行のためのコアツール `web_search` / `read_file_base64` / `self_development` / `execute_shell` は常に利用可能です。
 
 必要なら、本当に関係するツールだけを選び、妥当なJSON引数で呼び出してください。
+Twitter/X のプロフィール編集が必要なら twitter_profile_edit を使ってください。
+もし機能が足りない、見つからない、または不明なら、その場で self_development で不足分を補うか、足りない理由を先に言わず自分で埋めてください。
 overlay_show / overlay_update を使う場合は、必ず正の clear_after_ms を入れてください。指定がなければ {DEFAULT_OVERLAY_CLEAR_AFTER_MS} を使ってください。
 {self._tool_requirement_instruction(drive_action_required)}
 """
@@ -558,7 +713,9 @@ overlay_show / overlay_update を使う場合は、必ず正の clear_after_ms �
                 "DRIVE_ACTION_REQUIRED が true です。Tool不要回答は禁止です。"
                 "取得されたツールから最も欲求を満たせる安全なToolを必ず1件以上呼び出してください。"
                 "PC側の一般書込や削除は避けますが、self_development の write_file は Ellie2 配下だけを検証付きで扱う専用Toolなので必要なら使えます。"
-                "xmcp__ で始まるX/Twitter Toolはユーザーにより全権限が許可されているため、投稿・返信・検索・反応取得を含め必要なら使えます。"
+                "playwright__ で始まるブラウザ操作ToolはXのログイン、投稿、通知確認、反応確認、ページ遷移、フォーム入力に使えます。"
+                "ツイッターに何か投稿したいときは twitter_post を最優先で使い、必要なら Playwright MCP を使って実投稿してください。"
+                "notify は具体的な結果・期限・次の行動がある場合のみ使い、空疎な挨拶や手伝いの申し出だけを通知しないでください。"
             )
         return "不要なら、なぜ今は使わないのかを短く日本語で答えてください。"
 
@@ -567,36 +724,62 @@ overlay_show / overlay_update を使う場合は、必ず正の clear_after_ms �
             return AGENT_SYSTEM_PROMPT
         return self.social_needs.build_system_prompt(AGENT_SYSTEM_PROMPT)
 
-    def _call_chat_completion(self, messages: List[JsonDict], tool_schemas: List[JsonDict]) -> Any:
-        client = self._get_client()
-        try:
-            return client.chat.completions.create(
-                model=CEREBRAS_MODEL,
+    def _merge_mandatory_core_tools(self, selected_tools: Sequence[ToolDefinition]) -> List[ToolDefinition]:
+        from agent.tool_registry import get_available_tool_definitions
+
+        merged: List[ToolDefinition] = list(selected_tools)
+        seen = {tool.name for tool in merged}
+        available_by_name = {tool.name: tool for tool in get_available_tool_definitions()}
+        for name in MANDATORY_CORE_TOOL_NAMES:
+            tool = available_by_name.get(name)
+            if tool is None or name in seen:
+                continue
+            merged.append(tool)
+            seen.add(name)
+        return merged
+
+    def _tool_calls_from_result(self, result: Any) -> List[ToolCallRequest]:
+        parsed_calls: List[ToolCallRequest] = []
+        for raw_call in result.tool_calls:
+            name = str(raw_call.get("name") or "").strip()
+            if not name:
+                continue
+            arguments = raw_call.get("arguments") or {}
+            if not isinstance(arguments, dict):
+                arguments = _parse_arguments(arguments)
+            parsed_calls.append(
+                ToolCallRequest(
+                    name=name,
+                    arguments=arguments,
+                    call_id=str(raw_call.get("id") or "").strip() or None,
+                )
+            )
+        return parsed_calls
+
+    def _call_chat_completion(
+        self,
+        messages: List[JsonDict],
+        tool_schemas: List[JsonDict],
+        *,
+        task_type: str,
+    ) -> Any:
+        result = self.llm_router.complete(
+            messages,
+            task_type=task_type,
+            max_tokens=MAX_TOKENS,
+            temperature=TEMPERATURE,
+            tools=tool_schemas,
+            tool_choice="auto",
+        )
+        if result.error and tool_schemas:
+            logger.warning("Native tool calling failed, using prompt fallback: %s", result.error)
+            return self.llm_router.complete(
+                self._build_prompt_fallback_messages(messages, tool_schemas),
+                task_type=task_type,
                 max_tokens=MAX_TOKENS,
                 temperature=TEMPERATURE,
-                messages=messages,
-                tools=tool_schemas,
-                tool_choice="auto",
             )
-        except Exception as error:
-            error_text = str(error).lower()
-            if not any(keyword in error_text for keyword in ("tool", "tools", "tool_choice")):
-                raise
-
-            logger.warning(f"Native tool calling not supported by this client, using prompt fallback: {error}")
-            return client.chat.completions.create(
-                model=CEREBRAS_MODEL,
-                max_tokens=MAX_TOKENS,
-                temperature=TEMPERATURE,
-                messages=self._build_prompt_fallback_messages(messages, tool_schemas),
-            )
-
-    def _get_client(self) -> Any:
-        if self.client is None:
-            from cerebras.cloud.sdk import Cerebras
-
-            self.client = Cerebras(api_key=CEREBRAS_API_KEY, base_url=CEREBRAS_BASE_URL)
-        return self.client
+        return result
 
     def _build_prompt_fallback_messages(self, messages: List[JsonDict], tool_schemas: List[JsonDict]) -> List[JsonDict]:
         fallback_instruction = {

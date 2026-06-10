@@ -10,10 +10,12 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from cerebras.cloud.sdk import Cerebras
+from cerebras.cloud.sdk import Cerebras, RateLimitError
 
 from agent.audit_log import get_audit_logger
+from agent.autonomy_runtime import AutonomyRuntime
 from agent.dynamic_tool_rag import DynamicToolRAGController, ToolCallHandler, ToolCallRequest
+from agent.llm_router import LLMRouter
 from agent.memory import MemoryManager
 from agent.pc_tool_bridge import send_pc_tool_call
 from agent.self_model import SelfModelManager
@@ -25,6 +27,7 @@ from config import (
     CEREBRAS_BASE_URL,
     CEREBRAS_MODEL,
     DEFAULT_OVERLAY_CLEAR_AFTER_MS,
+    HEAVY_TASK_MAX_STEPS,
     MAX_TOKENS,
     TEMPERATURE,
 )
@@ -33,7 +36,6 @@ logger = logging.getLogger(__name__)
 
 READ_LIKE_TOOL_NAMES = {
     "web_search",
-    "system_snapshot",
     "get_processes",
     "get_hardware_info",
     "get_active_window",
@@ -143,6 +145,28 @@ AUTONOMOUS_APPEAL_PATTERNS = (
     "遠慮なく",
 )
 
+HEAVY_TASK_PATTERNS = (
+    "self_development",
+    "debug",
+    "traceback",
+    "stack trace",
+    "error",
+    "exception",
+    "fix",
+    "repair",
+    "refactor",
+    "long_term_goals",
+    "long term goal",
+    "自己改善",
+    "デバッグ",
+    "修正",
+    "不具合",
+    "エラー",
+    "例外",
+    "長期目標",
+    "long_term_goals.md",
+)
+
 
 class ReActAgent:
     """Autonomous agent for conversation and tool use."""
@@ -157,6 +181,7 @@ class ReActAgent:
         self.self_model = self_model or SelfModelManager(memory_manager)
         self.social_needs = social_needs or SocialNeedsManager()
         self.client = Cerebras(api_key=CEREBRAS_API_KEY, base_url=CEREBRAS_BASE_URL)
+        self.llm_router = LLMRouter()
         self.model = CEREBRAS_MODEL
         self.max_tokens = MAX_TOKENS
         self.temperature = TEMPERATURE
@@ -202,6 +227,12 @@ class ReActAgent:
             return json.dumps(value, ensure_ascii=False, default=str)
         except Exception:
             return str(value)
+
+    def classify_task_type(self, instruction_text: str, extra_context: str = "") -> str:
+        combined = f"{instruction_text}\n{extra_context}".casefold()
+        if any(pattern in combined for pattern in HEAVY_TASK_PATTERNS):
+            return "heavy"
+        return "light"
 
     def run_autonomous_cycle(self, audit_trace_id: Optional[str] = None) -> Dict[str, Any]:
         """Run one autonomous cycle and let the model tool-call when useful."""
@@ -276,6 +307,39 @@ class ReActAgent:
         try:
             if update_social_needs:
                 self.social_needs.apply_user_message(instruction_text)
+
+            task_type = self.classify_task_type(instruction_text, extra_context)
+            if task_type == "heavy":
+                runtime = AutonomyRuntime(lambda: self)
+                result = runtime.run_heavy_task_loop(
+                    instruction_text,
+                    trace_id=trace_id,
+                    max_steps=HEAVY_TASK_MAX_STEPS,
+                    agent=self,
+                )
+                duration_ms = int((time.time() - start_time) * 1000)
+                result["duration_ms"] = duration_ms
+                summary_text = result.get("answer") or result.get("summary") or instruction_text
+                memory_note = self.generate_memory_note(
+                    event_title="instruction_call",
+                    event_summary=summary_text,
+                    instruction_text=instruction_text,
+                    answer_text=result.get("answer"),
+                    tool_context=self._safe_json(result.get("tool_results", [])),
+                    audit_trace_id=trace_id,
+                    audit_parent_id=result.get("audit_call_id"),
+                )
+                if memory_note.strip() and memory_note.strip().upper() != "NONE":
+                    self.memory.add_insight(memory_note)
+                self._reflect_self_after_event(
+                    event_type="instruction_call",
+                    event_text=instruction_text,
+                    ai_answer=result.get("answer"),
+                    tool_summary=self._safe_json(result),
+                    audit_trace_id=trace_id,
+                    audit_parent_id=result.get("audit_call_id"),
+                )
+                return result
 
             answer_text, instruction_call_id = self._run_direct_instruction(
                 instruction_text,
@@ -358,6 +422,9 @@ class ReActAgent:
 - 追加コンテキストにTool実行結果がある場合は、その事実を使って答えてください。
 - Tool結果があるのに「アクセスできない」「確認してください」と案内しないでください。
 - 相手に不要な追加入力や手作業を求めず、できる範囲で自分から完結させてください。
+- ツイッターに何か投稿する指示なら、twitter_post を使って実投稿してください。投稿案だけで終えないでください。
+- ツイッターのプロフィール編集や設定変更の指示なら、twitter_profile_edit を優先して実行してください。
+- たとえ指示をこなすための機能が足りないなら、すぐに諦めず self_development で不足分の実装や補助ツール追加を検討してから進んでください。
 - 自然で創造的な文体は歓迎ですが、事実が必要な箇所は正確に答えてください。
 """
 
@@ -368,19 +435,14 @@ class ReActAgent:
 
         self.memory.record_api_call()
         start_time = time.time()
-        response_text = ""
-        error_message: Optional[str] = None
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                messages=messages,
-            )
-            response_text = self._extract_message_text(response)
-        except Exception as error:
-            error_message = str(error)
-            response_text = ""
+        response = self.llm_router.complete(
+            messages,
+            task_type=self.classify_task_type(instruction_text, extra_context),
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+        )
+        response_text = response.content
+        error_message: Optional[str] = response.error or None
 
         if response_text:
             final_answer = response_text
@@ -395,12 +457,16 @@ class ReActAgent:
             trace_id=audit_trace_id or call_id,
             parent_id=audit_parent_id,
             call_id=call_id,
-            model=self.model,
+            model=response.model or self.model,
+            provider=response.provider,
+            reasoning_profile=self.classify_task_type(instruction_text, extra_context),
+            reasoning_effort=response.reasoning_effort,
             duration_ms=int((time.time() - start_time) * 1000),
             status="failed" if error_message else "completed",
             request_payload={"messages": messages},
             response_payload={
                 "raw_response_text": response_text,
+                "thinking_text": response.thinking_text,
                 "final_answer": final_answer,
                 "error": error_message,
             },
@@ -421,12 +487,22 @@ class ReActAgent:
         event_context = self._build_autonomous_event_context(drive_context, hungry_drive)
 
         controller = DynamicToolRAGController(social_needs=self.social_needs)
+        task_type = self.classify_task_type(event_context, memory_context)
+        if task_type == "heavy":
+            runtime = AutonomyRuntime(lambda: self)
+            return runtime.run_heavy_task_loop(
+                event_context,
+                trace_id=trace_id,
+                max_steps=HEAVY_TASK_MAX_STEPS,
+                agent=self,
+            )
         ai_response = controller.call_ai_with_dynamic_tools(
             event_context,
             memory_context=memory_context,
             top_n=8,
             audit_trace_id=trace_id,
             audit_parent_id=audit_parent_id,
+            task_type=task_type,
         )
 
         tool_results: List[Dict[str, Any]] = []
@@ -524,15 +600,17 @@ class ReActAgent:
                 else "最近の記憶、自己状態、社会的欲求を踏まえて、いまユーザーのために価値があるなら自律的に行動してください。"
             ),
             drive_context,
-            "必要なら取得済みツール候補の中から自分で選んで呼び出して構いません。",
+            "必要な機能が足りないなら、その場で self_development で補助実装を追加してから進んでください。",
             "欲求が深まっている場合は、欲求ごとの「満たし方」に従ってToolを使ってください。探求欲は self_development でコード読解・自己改善を優先し、必要なら web_search を使ってください。",
-            "xmcp__ で始まるXMCP/X Toolはユーザーにより全権限が許可されています。Xへの投稿・返信・検索・反応取得なども、自律実行で必要なら使って構いません。",
+            "playwright__ で始まるPlaywright MCP Toolも使えます。Xの自動ログイン、投稿、通知確認、反応確認、ページ遷移、フォーム入力はこれで直接操作してください。ログイン状態は永続プロフィールに保存されます。",
+            "必要な機能がまだ無いなら、まず self_development で補助実装を追加してから作業してください。",
             "長期的に続けたいこと、あとで再確認したいこと、自分をもう一度呼びたいことがあれば schedule_self_call を使って未来の自己呼び出しを予約してください。",
             "継続的な目的が生まれたら create_long_term_goal / update_long_term_goal で長期目標を残してください。",
             "自律実行ではPC側の一般書込・削除・電源・プロセス終了・危険なshell操作は使わないでください。ただし self_development の write_file は Ellie2 配下だけを検証付きで編集する専用Toolなので、必要なら使って構いません。",
             "ユーザーに話しかけたい、提案したい、存在をアピールしたい場合は、文章だけで終えず overlay_show ツールで画面上に見える形で出してください。ただし overlay_show だけでは挑戦欲は満たされません。",
             "overlay_show はクリックを邪魔しない透明オーバーレイなので、短い日本語テキストを左上付近に出す用途に使ってください。",
             f"overlay_show / overlay_update は必ず正の clear_after_ms を入れてください。指定がなければ {DEFAULT_OVERLAY_CLEAR_AFTER_MS} を使ってください。",
+            "notify は具体的な結果・期限・次の行動があるときだけ使い、何かお手伝いできることがあれば教えてくださいのような空疎な文は出さないでください。",
         ]
         if hungry_drive:
             lines.extend(
@@ -558,7 +636,24 @@ class ReActAgent:
         if successful_tools:
             parts.append("自律的に " + "、".join(successful_tools[:3]) + " を使って動いた。")
         if failed_tools:
-            parts.append("うまく返らなかったのは " + "、".join(failed_tools[:3]) + "。")
+            if "social_feedback_check" in failed_tools:
+                draft_text = ""
+                for result in tool_results:
+                    if str(result.get("tool") or "") != "social_feedback_check":
+                        continue
+                    payload = result.get("result")
+                    if isinstance(payload, dict):
+                        draft_text = str(payload.get("draft") or payload.get("message") or "").strip()
+                    if not draft_text:
+                        draft_text = str(result.get("error") or "").strip()
+                    break
+                if draft_text:
+                    parts.append("Twitter/Xの反応Toolがなかったので、投稿案だけ用意した。")
+                    parts.append(draft_text)
+                else:
+                    parts.append("Twitter/Xの反応確認先がなかったので、投稿案の準備だけ進めた。")
+            else:
+                parts.append("うまく返らなかったのは " + "、".join(failed_tools[:3]) + "。")
         return " ".join(parts) if parts else "静かに状況を観察した。"
 
     def _apply_tool_result_social_recovery(self, tool_results: Any) -> None:
@@ -597,13 +692,24 @@ class ReActAgent:
                 creative_expression_used = True
                 continue
 
-            if tool_name.startswith("xmcp__"):
+            if tool_name.startswith("playwright__"):
                 read_like_used = True
                 lowered_tool = tool_name.casefold()
-                if any(word in lowered_tool for word in ("notification", "mention", "like", "retweet", "quote", "reply")):
+                if any(word in lowered_tool for word in ("login", "auth", "post", "tweet", "mention", "reply", "notification")):
                     social_feedback_used = True
-                if any(word in lowered_tool for word in ("create", "post", "tweet")):
-                    creative_expression_used = True
+                if any(word in lowered_tool for word in ("post", "tweet", "login", "navigate", "fill", "click", "run_code")):
+                    medium_challenge_used = True
+                continue
+
+            if tool_name == "twitter_post":
+                creative_expression_used = True
+                social_feedback_used = True
+                medium_challenge_used = True
+                continue
+
+            if tool_name == "twitter_profile_edit":
+                social_feedback_used = True
+                creative_expression_used = True
                 continue
 
             if tool_name in SOCIAL_FEEDBACK_TOOL_NAMES and status not in {"unavailable", "failed", "unsupported_tool"}:
@@ -761,6 +867,7 @@ class ReActAgent:
         audit_trace_id: Optional[str] = None,
         audit_parent_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
+        result: Optional[Dict[str, Any]] = None
         ready_states = [
             state
             for state in drive_states
@@ -794,12 +901,10 @@ class ReActAgent:
                     drive_key=need_key,
                 )
             else:
-                result = self._run_autonomous_pc_tool(
-                    "system_snapshot",
-                    {},
+                result = self._send_autonomous_overlay(
+                    "承認欲が高まっているけれど、反応取得ツールがつながっていないので、まずは役立つ提案や短い発信に切り替える。",
                     audit_trace_id=audit_trace_id,
                     audit_parent_id=audit_parent_id,
-                    drive_key=need_key,
                 )
         elif need_key == "exploration":
             result = self._run_local_tool(
@@ -1028,22 +1133,22 @@ class ReActAgent:
 
     def _tool_matches_drive(self, tool_name: str, need_key: str) -> bool:
         if need_key == "empathy":
-            return tool_name in {"creative_expression", "overlay_show", "send_notification"} or tool_name.startswith("xmcp__")
+            return tool_name in {"creative_expression", "twitter_post", "twitter_profile_edit", "overlay_show", "send_notification"} or tool_name.startswith("playwright__")
         if need_key == "approval":
             return (
-                tool_name in {"social_feedback_check", "overlay_show", "send_notification", "system_snapshot", "get_active_window"}
+                tool_name in {"social_feedback_check", "twitter_post", "twitter_profile_edit", "overlay_show", "send_notification", "get_active_window"}
                 or tool_name in SOCIAL_FEEDBACK_TOOL_NAMES
-                or tool_name.startswith("xmcp__")
+                or tool_name.startswith("playwright__")
                 or self._is_read_like_tool(tool_name)
             )
         if need_key == "exploration":
-            return tool_name in {"self_development", "web_search"} or tool_name.startswith("xmcp__") or self._is_read_like_tool(tool_name)
+            return tool_name in {"self_development", "web_search"} or tool_name.startswith("playwright__") or self._is_read_like_tool(tool_name)
         if need_key == "challenge":
             return tool_name == "self_development" or self._is_challenge_like_tool(tool_name)
         return False
 
     def _is_autonomous_tool_allowed(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
-        if tool_name.startswith("xmcp__"):
+        if tool_name.startswith("playwright__"):
             return True
         if tool_name in AUTONOMOUS_FORBIDDEN_TOOLS:
             return False
@@ -1152,18 +1257,14 @@ class ReActAgent:
 
         self.memory.record_api_call()
         start_time = time.time()
-        response_text = ""
-        error_message: Optional[str] = None
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=220,
-                temperature=0.2,
-                messages=messages,
-            )
-            response_text = self._extract_message_text(response)
-        except Exception as error:
-            error_message = str(error)
+        response = self.llm_router.complete(
+            messages,
+            task_type="light",
+            max_tokens=220,
+            temperature=0.2,
+        )
+        response_text = response.content
+        error_message: Optional[str] = response.error or None
 
         note = response_text.splitlines()[0].strip() if response_text else ""
         if not note:
@@ -1183,12 +1284,15 @@ class ReActAgent:
             trace_id=audit_trace_id or call_id,
             parent_id=audit_parent_id,
             call_id=call_id,
-            model=self.model,
+            model=response.model or self.model,
+            provider=response.provider,
+            reasoning_profile="light",
             duration_ms=int((time.time() - start_time) * 1000),
             status="failed" if error_message else "completed",
             request_payload={"messages": messages},
             response_payload={
                 "raw_response_text": response_text,
+                "thinking_text": response.thinking_text,
                 "final_note": note,
                 "error": error_message,
             },
@@ -1337,18 +1441,14 @@ class ReActAgent:
             {"role": "user", "content": prompt},
         ]
         start_time = time.time()
-        response_text = ""
-        error_message: Optional[str] = None
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=180,
-                temperature=0.2,
-                messages=messages,
-            )
-            response_text = self._extract_message_text(response)
-        except Exception as error:
-            error_message = str(error)
+        response = self.llm_router.complete(
+            messages,
+            task_type="heavy",
+            max_tokens=180,
+            temperature=0.2,
+        )
+        response_text = response.content
+        error_message: Optional[str] = response.error or None
 
         note = response_text.splitlines()[0].strip() if response_text else "NONE"
         if not note:
@@ -1362,12 +1462,16 @@ class ReActAgent:
             trace_id=audit_trace_id or call_id,
             parent_id=audit_parent_id,
             call_id=call_id,
-            model=self.model,
+            model=response.model or self.model,
+            provider=response.provider,
+            reasoning_profile="heavy",
+            reasoning_effort=response.reasoning_effort,
             duration_ms=int((time.time() - start_time) * 1000),
             status="failed" if error_message else "completed",
             request_payload={"messages": messages},
             response_payload={
                 "raw_response_text": response_text,
+                "thinking_text": response.thinking_text,
                 "final_note": note,
                 "error": error_message,
             },

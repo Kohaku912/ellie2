@@ -9,10 +9,10 @@ Ellie2 is a local Japanese AI agent that can run as a daemon or answer a direct 
 - Dynamic Tool Retrieval for selecting only relevant Tool schemas
 - Persistent PC Tool WebSocket bridge
 - Discord / PC tool operation through the bridge
+- Playwright MCP browser automation for login, posting, and reaction checks
 - Today's memory and selected long-term memory
 - Separate self-model files for stable identity and current self-state
 - Social need homeostasis with dynamic prompt injection
-- XMCP / X(Twitter) MCP tool integration when credentials are configured
 - Long-running self-call queue for autonomous follow-ups and goals
 - Local Web dashboard with read-only state view and AI chat
 - Markdown audit logs for AI calls and Tool calls
@@ -67,17 +67,11 @@ WEB_PORT=8080
 
 The Web server also starts the autonomy runtime. If `main.py` is already running, `agent_data/runtime/autonomy.lock` prevents a second worker from processing the same queue.
 
-## XMCP / X MCP
+## Playwright MCP
 
-XMCP uses the official `xdevplatform/xmcp` server. Configure the X credentials in `agent_data/vendor/xmcp/.env`:
+Playwright MCP starts via `npx @playwright/mcp@latest` with a persistent browser profile under `agent_data/vendor/playwright/`.
 
-```text
-X_OAUTH_CONSUMER_KEY=...
-X_OAUTH_CONSUMER_SECRET=...
-X_BEARER_TOKEN=...
-```
-
-With `XMCP_ENABLED=true`, Ellie auto-installs/starts XMCP when credentials exist, exposes tools as `xmcp__...`, and allows all XMCP tool calls in direct and autonomous runs.
+If you want to keep a logged-in X session across runs, leave `PLAYWRIGHT_MCP_HEADLESS=false` and log in once in the browser that Playwright opens. The saved profile is reused on later runs, so Ellie can keep posting and checking reactions without asking you to log in again.
 
 ## PC Tool Bridge
 
@@ -122,10 +116,10 @@ The PC side should respond with:
 - `agent/dynamic_tool_rag.py`: Dynamic Tool Retrieval and Tool Calling layer
 - `agent/tool_registry.py`: available Tool schemas
 - `agent/pc_tool_bridge.py`: persistent PC Tool bridge
+- `agent/playwright_mcp.py`: Playwright MCP install/start and browser automation client
 - `agent/memory.py`: today's memory and long-term memory
 - `agent/self_model.py`: self-model and current self-state
 - `agent/social_needs.py`: social need state and dynamic prompt injection
-- `agent/mcp_client.py`: XMCP install/start and HTTP MCP tool client
 - `agent/autonomy_runtime.py`: self-call queue and long-term goals
 - `agent/audit_log.py`: human-readable audit logging
 - `scheduler/scheduler.py`: periodic jobs

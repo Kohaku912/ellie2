@@ -17,6 +17,11 @@ except ImportError:
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "test_key_placeholder")
 CEREBRAS_BASE_URL = os.getenv("CEREBRAS_BASE_URL", "https://api.cerebras.ai")
 CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEEPSEEK_REASONING_EFFORT = os.getenv("DEEPSEEK_REASONING_EFFORT", "high")
+HEAVY_TASK_MAX_STEPS = max(1, int(os.getenv("HEAVY_TASK_MAX_STEPS", "12")))
 
 # Agent Configuration
 AGENT_TIMEZONE = os.getenv("AGENT_TIMEZONE", "Asia/Tokyo")
@@ -44,7 +49,10 @@ MEMORY_FILE = MEMORY_DIR / "memory.md"
 LONG_TERM_MEMORY_FILE = MEMORY_DIR / "long_term_memory.md"
 SELF_FILE = MEMORY_DIR / "self.md"
 SELF_STATE_FILE = MEMORY_DIR / "state.md"
+SELF_DEVELOPMENT_REQUESTS_FILE = MEMORY_DIR / "self_development_requests.md"
 SOCIAL_NEEDS_FILE = MEMORY_DIR / "social_needs.json"
+SOCIAL_NEEDS_RECOVERY_HISTORY_FILE = MEMORY_DIR / "social_needs_recovery_history.json"
+SOCIAL_NEEDS_EVAL_API_KEY = os.getenv("SOCIAL_NEEDS_EVAL_API_KEY", CEREBRAS_API_KEY)
 TASK_LOG_FILE = MEMORY_DIR / "task_log.json"
 ERROR_LOG_FILE = LOG_DIR / "errors.log"
 EXECUTION_LOG_FILE = LOG_DIR / "execution.log"
@@ -52,12 +60,17 @@ LONG_TERM_GOALS_FILE = MEMORY_DIR / "long_term_goals.md"
 AUTONOMY_QUEUE_FILE = MEMORY_DIR / "autonomy_queue.jsonl"
 AUTONOMY_LOCK_FILE = RUNTIME_DIR / "autonomy.lock"
 
-# XMCP / X MCP configuration
-XMCP_ENABLED = os.getenv("XMCP_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-XMCP_AUTO_INSTALL = os.getenv("XMCP_AUTO_INSTALL", "true").strip().lower() in {"1", "true", "yes", "on"}
-XMCP_SERVER_URL = os.getenv("XMCP_SERVER_URL", "http://127.0.0.1:8000/mcp")
-XMCP_REPO_URL = os.getenv("XMCP_REPO_URL", "https://github.com/xdevplatform/xmcp")
-XMCP_DIR = Path(os.getenv("XMCP_DIR", str(MEMORY_DIR / "vendor" / "xmcp")))
+# Playwright MCP / browser automation configuration
+PLAYWRIGHT_MCP_ENABLED = os.getenv("PLAYWRIGHT_MCP_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+PLAYWRIGHT_MCP_AUTO_INSTALL = os.getenv("PLAYWRIGHT_MCP_AUTO_INSTALL", "true").strip().lower() in {"1", "true", "yes", "on"}
+PLAYWRIGHT_MCP_HOST = os.getenv("PLAYWRIGHT_MCP_HOST", "127.0.0.1")
+PLAYWRIGHT_MCP_PORT = int(os.getenv("PLAYWRIGHT_MCP_PORT", "8931"))
+PLAYWRIGHT_MCP_SERVER_URL = os.getenv("PLAYWRIGHT_MCP_SERVER_URL", f"http://{PLAYWRIGHT_MCP_HOST}:{PLAYWRIGHT_MCP_PORT}/mcp")
+PLAYWRIGHT_MCP_BROWSER = os.getenv("PLAYWRIGHT_MCP_BROWSER", "chromium")
+PLAYWRIGHT_MCP_HEADLESS = os.getenv("PLAYWRIGHT_MCP_HEADLESS", "false").strip().lower() in {"1", "true", "yes", "on"}
+PLAYWRIGHT_DIR = Path(os.getenv("PLAYWRIGHT_DIR", str(MEMORY_DIR / "vendor" / "playwright")))
+PLAYWRIGHT_USER_DATA_DIR = Path(os.getenv("PLAYWRIGHT_USER_DATA_DIR", str(PLAYWRIGHT_DIR / "user-data")))
+PLAYWRIGHT_STORAGE_STATE_FILE = Path(os.getenv("PLAYWRIGHT_STORAGE_STATE_FILE", str(PLAYWRIGHT_DIR / "storage_state.json")))
 
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -71,7 +84,7 @@ DEFAULT_OVERLAY_CLEAR_AFTER_MS = int(os.getenv("DEFAULT_OVERLAY_CLEAR_AFTER_MS",
 
 # API parameters
 REQUEST_TIMEOUT = 30
-MAX_TOKENS = 2000
+MAX_TOKENS = 3000
 TEMPERATURE = 0.7
 
 # Note: For production use, ensure CEREBRAS_API_KEY is set to a valid key in .env or environment

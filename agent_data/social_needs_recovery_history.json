@@ -1,0 +1,218 @@
+{
+  "2026-06-09": {
+    "counts": {
+      "exploration": {
+        "activity_event:self_development_inspect:self_development": 9
+      }
+    },
+    "records": [
+      {
+        "ai_multiplier": 1.0,
+        "applied_amount": 0.15,
+        "at": "2026-06-09T17:39:02.579657+00:00",
+        "count_today": 1,
+        "delta_after": -0.1959,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 1.0,
+        "heuristic_multiplier": 1.0,
+        "need": "exploration",
+        "reason": "activity_event:self_development_inspect:self_development",
+        "requested_amount": 0.15,
+        "source": "activity_event",
+        "status_after": 0.3041,
+        "status_before": 0.1541,
+        "success": true,
+        "tool_names": [
+          "self_development"
+        ]
+      },
+      {
+        "ai_multiplier": 0.82,
+        "applied_amount": 0.10086,
+        "at": "2026-06-09T17:40:01.134645+00:00",
+        "count_today": 2,
+        "delta_after": -0.095634,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 0.6724,
+        "heuristic_multiplier": 0.82,
+        "need": "exploration",
+        "reason": "activity_event:self_development_inspect:self_development",
+        "requested_amount": 0.15,
+        "source": "activity_event",
+        "status_after": 0.404366,
+        "status_before": 0.303506,
+        "success": true,
+        "tool_names": [
+          "self_development"
+        ]
+      },
+      {
+        "ai_multiplier": 0.64,
+        "applied_amount": 0.06144,
+        "at": "2026-06-09T17:41:01.916269+00:00",
+        "count_today": 3,
+        "delta_after": -0.035013,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 0.4096,
+        "heuristic_multiplier": 0.64,
+        "need": "exploration",
+        "reason": "activity_event:self_development_inspect:self_development",
+        "requested_amount": 0.15,
+        "source": "activity_event",
+        "status_after": 0.464987,
+        "status_before": 0.403547,
+        "success": true,
+        "tool_names": [
+          "self_development"
+        ]
+      },
+      {
+        "ai_multiplier": 0.46,
+        "applied_amount": 0.045,
+        "at": "2026-06-09T17:42:01.085276+00:00",
+        "count_today": 4,
+        "delta_after": 0.00907,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 0.3,
+        "heuristic_multiplier": 0.46,
+        "need": "exploration",
+        "reason": "activity_event:self_development_inspect:self_development",
+        "requested_amount": 0.15,
+        "source": "activity_event",
+        "status_after": 0.50907,
+        "status_before": 0.46407,
+        "success": true,
+        "tool_names": [
+          "self_development"
+        ]
+      },
+      {
+        "ai_multiplier": 0.3,
+        "applied_amount": 0.045,
+        "at": "2026-06-09T18:04:03.136777+00:00",
+        "count_today": 5,
+        "delta_after": 0.032102,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 0.3,
+        "heuristic_multiplier": 0.3,
+        "need": "exploration",
+        "reason": "activity_event:self_development_inspect:self_development",
+        "requested_amount": 0.15,
+        "source": "activity_event",
+        "status_after": 0.532102,
+        "status_before": 0.487102,
+        "success": true,
+        "tool_names": [
+          "self_development"
+        ]
+      },
+      {
+        "ai_multiplier": 0.3,
+        "applied_amount": 0.045,
+        "at": "2026-06-09T18:05:00.978298+00:00",
+        "count_today": 6,
+        "delta_after": 0.076076,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 0.3,
+        "heuristic_multiplier": 0.3,
+        "need": "exploration",
+        "reason": "activity_event:self_development_inspect:self_development",
+        "requested_amount": 0.15,
+        "source": "activity_event",
+        "status_after": 0.576076,
+        "status_before": 0.531076,
+        "success": true,
+        "tool_names": [
+          "self_development"
+        ]
+      },
+      {
+        "ai_multiplier": 0.3,
+        "applied_amount": 0.045,
+        "at": "2026-06-09T18:06:01.772308+00:00",
+        "count_today": 7,
+        "delta_after": 0.119908,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 0.3,
+        "heuristic_multiplier": 0.3,
+        "need": "exploration",
+        "reason": "activity_event:self_development_inspect:self_development",
+        "requested_amount": 0.15,
+        "source": "activity_event",
+        "status_after": 0.619908,
+        "status_before": 0.574908,
+        "success": true,
+        "tool_names": [
+          "self_development"
+        ]
+      },
+      {
+        "ai_multiplier": 0.3,
+        "applied_amount": 0.045,
+        "at": "2026-06-09T18:07:00.995879+00:00",
+        "count_today": 8,
+        "delta_after": 0.163685,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 0.3,
+        "heuristic_multiplier": 0.3,
+        "need": "exploration",
+        "reason": "activity_event:self_development_inspect:self_development",
+        "requested_amount": 0.15,
+        "source": "activity_event",
+        "status_after": 0.663685,
+        "status_before": 0.618685,
+        "success": true,
+        "tool_names": [
+          "self_development"
+        ]
+      },
+      {
+        "ai_multiplier": 0.3,
+        "applied_amount": 0.045,
+        "at": "2026-06-09T18:08:01.575037+00:00",
+        "count_today": 9,
+        "delta_after": 0.207344,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 0.3,
+        "heuristic_multiplier": 0.3,
+        "need": "exploration",
+        "reason": "activity_event:self_development_inspect:self_development",
+        "requested_amount": 0.15,
+        "source": "activity_event",
+        "status_after": 0.707344,
+        "status_before": 0.662344,
+        "success": true,
+        "tool_names": [
+          "self_development"
+        ]
+      }
+    ]
+  }
+}

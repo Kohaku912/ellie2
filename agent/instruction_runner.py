@@ -46,6 +46,7 @@ class InstructionRunner:
         run_trace_id = self.audit_logger.new_id("user-run")
         self.social_needs.apply_user_message(instruction_text)
         memory_context = self.memory.get_tool_memory_context()
+        task_type = self.agent.classify_task_type(instruction_text, memory_context)
         tool_context = build_tool_context(
             instruction_text,
             memory_context=memory_context,
@@ -53,6 +54,7 @@ class InstructionRunner:
             social_needs=self.social_needs,
             audit_trace_id=run_trace_id,
             audit_parent_id=run_trace_id,
+            task_type=task_type,
         )
         read_tools = _read_tools_from_context(tool_context)
         if read_tools:
@@ -131,6 +133,7 @@ def build_tool_context(
     social_needs: Any | None = None,
     audit_trace_id: str | None = None,
     audit_parent_id: str | None = None,
+    task_type: str = "light",
 ) -> str:
     """Run PC/Discord tools when the instruction clearly needs external state."""
     from agent.dynamic_tool_rag import DynamicToolRAGController
@@ -160,6 +163,40 @@ def build_tool_context(
     if _is_discord_voice_leave_request(instruction_text):
         return _run_discord_voice_leave(send_audited_pc_tool_call)
 
+    forced_profile_call = _forced_twitter_profile_edit_call(instruction_text)
+    if forced_profile_call:
+        from agent.dynamic_tool_rag import ToolCallHandler
+
+        result = ToolCallHandler().handle(
+            forced_profile_call,
+            audit_trace_id=trace_id,
+            audit_parent_id=parent_id,
+            audit_phase="forced_instruction",
+        )
+        return _format_local_tool_context(
+            "twitter_profile_edit",
+            forced_profile_call.get("arguments", {}),
+            result if isinstance(result, dict) else {"status": "failed", "result": result},
+        )
+
+    forced_twitter_call = _forced_twitter_post_call(instruction_text)
+    if forced_twitter_call:
+        from agent.dynamic_tool_rag import ToolCallHandler
+
+        result = ToolCallHandler().handle(
+            forced_twitter_call,
+            audit_trace_id=trace_id,
+            audit_parent_id=parent_id,
+            audit_phase="forced_instruction",
+        )
+        if isinstance(result, dict):
+            _apply_local_tool_social_recovery(social_needs, "twitter_post", result)
+        return _format_local_tool_context(
+            "twitter_post",
+            forced_twitter_call.get("arguments", {}),
+            result if isinstance(result, dict) else {"status": "failed", "result": result},
+        )
+
     forced_tool_call = _forced_pc_tool_call(instruction_text)
     if forced_tool_call:
         if str(forced_tool_call.get("tool", "")).startswith("discord_") and forced_tool_call.get("tool") != "discord_status":
@@ -186,6 +223,7 @@ def build_tool_context(
         top_n=5,
         audit_trace_id=trace_id,
         audit_parent_id=parent_id,
+        task_type=task_type,
     )
     current_parent_id = ai_response.call_id or parent_id
     context_blocks: List[str] = []
@@ -241,13 +279,18 @@ def _apply_local_tool_social_recovery(social_needs: Any | None, tool_name: str, 
     status = str(result.get("status") or "").strip().casefold()
     if status != "completed":
         return
-    if tool_name.startswith("xmcp__"):
+    if tool_name.startswith("playwright__"):
         social_needs.apply_activity_event("new_external_data", tool_names=[tool_name], success=True)
         lowered_tool = tool_name.casefold()
-        if any(word in lowered_tool for word in ("notification", "mention", "like", "retweet", "quote", "reply")):
+        if any(word in lowered_tool for word in ("login", "auth", "mention", "like", "retweet", "quote", "reply", "notification")):
             social_needs.apply_activity_event("social_feedback", tool_names=[tool_name], success=True)
-        if any(word in lowered_tool for word in ("create", "post", "tweet")):
-            social_needs.apply_activity_event("creative_expression", tool_names=[tool_name], success=True)
+        if any(word in lowered_tool for word in ("post", "tweet", "run_code", "navigate", "fill", "click")):
+            social_needs.apply_activity_event("medium_challenge_success", tool_names=[tool_name], success=True)
+        return
+    if tool_name == "twitter_post":
+        social_needs.apply_activity_event("social_feedback", tool_names=[tool_name], success=True)
+        social_needs.apply_activity_event("creative_expression", tool_names=[tool_name], success=True)
+        social_needs.apply_activity_event("medium_challenge_success", tool_names=[tool_name], success=True)
         return
     if tool_name == "web_search":
         social_needs.apply_activity_event("new_external_data", tool_names=[tool_name], success=True)
@@ -281,6 +324,33 @@ def _forced_pc_tool_call(instruction_text: str) -> JsonDict | None:
         }
     return None
 
+
+def _forced_twitter_post_call(instruction_text: str) -> JsonDict | None:
+    lowered = instruction_text.lower()
+    if not any(word in lowered for word in ("twitter", "x", "????", "??", "???", "tweet")):
+        return None
+    if any(word in lowered for word in ("???", "draft", "???")) and not any(word in lowered for word in ("??", "????", "????", "?????", "tweet??")):
+        return None
+    return {
+        "type": "tool_call",
+        "call_id": "twitter-post-forced",
+        "tool": "twitter_post",
+        "arguments": {},
+    }
+
+
+def _forced_twitter_profile_edit_call(instruction_text: str) -> JsonDict | None:
+    lowered = instruction_text.lower()
+    if not any(word in lowered for word in ("twitter", "x", "?????", "??????", "profile", "????", "bio")):
+        return None
+    if not any(word in lowered for word in ("??", "??", "???", "update", "edit", "??????")):
+        return None
+    return {
+        "type": "tool_call",
+        "call_id": "twitter-profile-edit-forced",
+        "tool": "twitter_profile_edit",
+        "arguments": {},
+    }
 
 def _is_discord_voice_join_request(instruction_text: str) -> bool:
     lowered = instruction_text.lower()

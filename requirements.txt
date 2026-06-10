@@ -1,6 +1,7 @@
 apscheduler==3.10.4
 cerebras-cloud-sdk
 fastapi
+httpx
 python-dotenv==1.0.0
 uvicorn
 websockets

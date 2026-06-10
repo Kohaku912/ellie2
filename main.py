@@ -43,7 +43,7 @@ def main():
     global scheduler
     
     logger.info(f"Starting {AGENT_NAME} Autonomous AI Agent")
-    logger.info(f"Using Cerebras API as reasoning engine")
+    logger.info("Using hybrid LLM routing: Cerebras for light tasks, DeepSeek for heavy tasks")
     
     # Initialize scheduler
     scheduler = AutonomousAgentScheduler()

@@ -12,15 +12,13 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from cerebras.cloud.sdk import Cerebras
-
 from agent.audit_log import AuditLogger, get_audit_logger
+from agent.llm_router import LLMRouter
 from config import (
     AGENT_NAME,
-    CEREBRAS_API_KEY,
-    CEREBRAS_BASE_URL,
     CEREBRAS_MODEL,
     SELF_FILE,
+    SELF_DEVELOPMENT_REQUESTS_FILE,
     SELF_STATE_FILE,
 )
 
@@ -56,13 +54,15 @@ class SelfModelManager:
         audit_logger: Optional[AuditLogger] = None,
         self_file: Path = SELF_FILE,
         state_file: Path = SELF_STATE_FILE,
+        requests_file: Path = SELF_DEVELOPMENT_REQUESTS_FILE,
     ):
         self.memory = memory_manager
         self.audit_logger = audit_logger or get_audit_logger()
         self.self_file = Path(self_file)
         self.state_file = Path(state_file)
+        self.requests_file = Path(requests_file)
         self.model = CEREBRAS_MODEL
-        self.client = Cerebras(api_key=CEREBRAS_API_KEY, base_url=CEREBRAS_BASE_URL)
+        self.llm_router = LLMRouter()
         self._ensure_files()
 
     def get_self_context(self) -> str:
@@ -70,6 +70,7 @@ class SelfModelManager:
         self._ensure_files()
         self_text = self._compact_text(self._read_text(self.self_file), max_chars=2400)
         state_text = self._compact_text(self._read_text(self.state_file), max_chars=1600)
+        request_text = self._compact_text(self._read_text(self.requests_file), max_chars=1400)
         return "\n".join(
             [
                 "## 自己モデル",
@@ -77,6 +78,9 @@ class SelfModelManager:
                 "",
                 "## 現在の自己状態",
                 state_text,
+                "",
+                "## 自己改善リクエスト",
+                request_text or "保留中の自己改善リクエストはまだない。",
             ]
         ).strip()
 
@@ -113,14 +117,15 @@ class SelfModelManager:
         stored_note = NO_SELF_UPDATE
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = self.llm_router.complete(
+                messages,
+                task_type="light",
                 max_tokens=160,
                 temperature=0.2,
-                messages=messages,
             )
-            response_text = self._extract_message_text(response)
+            response_text = response.content
             stored_target, stored_note = self._apply_reflection_response(response_text)
+            error_message = response.error or None
         except Exception as error:
             error_message = str(error)
             stored_note = NO_SELF_UPDATE
@@ -132,12 +137,15 @@ class SelfModelManager:
             trace_id=trace_id,
             parent_id=audit_parent_id,
             call_id=call_id,
-            model=self.model,
+            model=response.model if 'response' in locals() else self.model,
+            provider=response.provider if 'response' in locals() else "cerebras",
+            reasoning_profile="light",
             duration_ms=int((time.time() - start_time) * 1000),
             status="failed" if error_message else "completed",
             request_payload={"messages": messages},
             response_payload={
                 "raw_response_text": response_text,
+                "thinking_text": response.thinking_text if 'response' in locals() else "",
                 "write_target": stored_target,
                 "final_note": stored_note,
                 "error": error_message,
@@ -157,6 +165,11 @@ class SelfModelManager:
             self.self_file.write_text(DEFAULT_SELF_TEXT, encoding="utf-8")
         if not self.state_file.exists():
             self.state_file.write_text(DEFAULT_STATE_TEXT, encoding="utf-8")
+        if not self.requests_file.exists():
+            self.requests_file.write_text(
+                "# Ellie の自己改善リクエスト\n\n- まだ保留中の依頼はありません。\n",
+                encoding="utf-8",
+            )
 
     def _build_reflection_messages(
         self,

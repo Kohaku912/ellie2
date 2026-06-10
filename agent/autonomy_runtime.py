@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.audit_log import get_audit_logger
 from agent.time_utils import agent_tz, isoformat_local, now_local
-from config import AUTONOMY_LOCK_FILE, AUTONOMY_QUEUE_FILE, LONG_TERM_GOALS_FILE
+from config import AUTONOMY_LOCK_FILE, AUTONOMY_QUEUE_FILE, HEAVY_TASK_MAX_STEPS, LONG_TERM_GOALS_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,7 @@ AUTONOMY_POLL_SECONDS = 5
 LOCK_STALE_SECONDS = 60
 SELF_CALL_LOOP_WINDOW_SECONDS = 30
 _GLOBAL_RUNTIME: "AutonomyRuntime | None" = None
+HEAVY_CORE_TOOL_NAMES = ("web_search", "read_file_base64", "self_development", "execute_shell")
 
 
 class AutonomyRuntime:
@@ -105,6 +106,180 @@ class AutonomyRuntime:
             "started_at": self._started_at,
             "last_run_at": self._last_run_at,
             "last_error": self._last_error,
+        }
+
+    def run_heavy_task_loop(
+        self,
+        task_text: str,
+        *,
+        trace_id: str | None = None,
+        max_steps: int | None = None,
+        agent: Any | None = None,
+    ) -> JsonDict:
+        from agent.dynamic_tool_rag import ToolCallHandler, ToolCallRequest
+        from agent.llm_router import LLMRouter
+        from agent.tool_registry import get_available_tool_definitions
+
+        started = time.time()
+        audit_logger = get_audit_logger()
+        heavy_task_id = audit_logger.new_id("heavy-task")
+        resolved_trace_id = trace_id or heavy_task_id
+        step_limit = max(1, int(max_steps or HEAVY_TASK_MAX_STEPS))
+        llm_router = LLMRouter()
+        tool_handler = ToolCallHandler()
+        available_tools = {tool.name: tool for tool in get_available_tool_definitions()}
+        selected_tools = [available_tools[name] for name in HEAVY_CORE_TOOL_NAMES if name in available_tools]
+        tool_schemas = [tool.to_openai_tool() for tool in selected_tools]
+        system_prompt = (
+            agent._build_system_prompt()
+            if agent is not None and hasattr(agent, "_build_system_prompt")
+            else "あなたは Ellie の重タスク実行レイヤーです。"
+        )
+        heavy_rules = (
+            "これは重タスクの同期実行セッションです。"
+            "コード修正・調査・実行検証を同じ文脈のまま粘り強く続けてください。"
+            "使えるコアツールは web_search / read_file_base64 / self_development / execute_shell です。"
+            "必要なら self_development で inspect・write_file・verify を行い、execute_shell で py_compile やテストを実行してください。"
+            "不足機能を見つけたら、まず調査し、可能なら小さく実装し、危険な操作やプロジェクト外編集は行わないでください。"
+            "各ステップでは可能な限り1件以上の Tool を呼び、失敗したらエラーを踏まえて次手を変えてください。"
+            "完了できたと判断した場合だけ、短い日本語で DONE と書き、その理由を1〜3文で述べてください。"
+        )
+        conversation_history: list[JsonDict] = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"{heavy_rules}\n\n"
+                    f"## 依頼\n{task_text.strip()}\n\n"
+                    "まず現在の方針を決め、必要な Tool を使って進めてください。"
+                ),
+            },
+        ]
+        modified_paths: list[str] = []
+        all_tool_results: list[JsonDict] = []
+        last_error = ""
+        last_test_output = ""
+        final_answer = ""
+        final_status = "failed"
+        final_call_id = ""
+
+        for step_index in range(1, step_limit + 1):
+            call_id = audit_logger.new_id("heavy-step")
+            final_call_id = call_id
+            response = llm_router.complete(
+                conversation_history,
+                task_type="heavy",
+                max_tokens=2400,
+                temperature=0.3,
+                tools=tool_schemas,
+                tool_choice="auto",
+            )
+            audit_logger.log_ai_call(
+                call_type="heavy_task_step",
+                trigger="heavy_task_loop",
+                trace_id=resolved_trace_id,
+                parent_id=heavy_task_id,
+                call_id=call_id,
+                model=response.model,
+                provider=response.provider,
+                reasoning_profile="heavy",
+                reasoning_effort=response.reasoning_effort,
+                heavy_task_id=heavy_task_id,
+                step_index=step_index,
+                duration_ms=response.duration_ms,
+                status="failed" if response.error else ("tool_call_requested" if response.tool_calls else "completed"),
+                request_payload={"messages": conversation_history, "tools": tool_schemas},
+                response_payload={
+                    "content": response.content,
+                    "thinking_text": response.thinking_text,
+                    "tool_calls": response.tool_calls,
+                },
+                error=response.error or None,
+            )
+            if response.error:
+                final_answer = "重タスクの推論呼び出しに失敗しました。"
+                last_error = response.error
+                break
+
+            assistant_text = (response.content or "").strip()
+            final_answer = assistant_text or final_answer
+            step_tool_results: list[JsonDict] = []
+            tool_calls = response.tool_calls or []
+
+            if not tool_calls:
+                fallback_arguments: JsonDict
+                fallback_name: str
+                if modified_paths:
+                    fallback_name = "self_development"
+                    fallback_arguments = {"action": "verify", "paths": modified_paths[-8:]}
+                else:
+                    fallback_name = "self_development"
+                    fallback_arguments = {"action": "inspect", "focus": task_text[:200]}
+                tool_calls = [{"id": f"{call_id}-fallback", "name": fallback_name, "arguments": fallback_arguments}]
+
+            for raw_call in tool_calls:
+                tool_call = ToolCallRequest(
+                    name=str(raw_call.get("name") or "").strip(),
+                    arguments=raw_call.get("arguments") if isinstance(raw_call.get("arguments"), dict) else {},
+                    call_id=str(raw_call.get("id") or "").strip() or None,
+                )
+                result = tool_handler.handle(
+                    tool_call,
+                    audit_trace_id=resolved_trace_id,
+                    audit_parent_id=call_id,
+                    audit_phase="heavy_task_loop",
+                )
+                step_tool_results.append({"tool": tool_call.name, "arguments": tool_call.arguments, "result": result})
+                all_tool_results.append({"step_index": step_index, "tool": tool_call.name, "arguments": tool_call.arguments, "result": result})
+
+                if isinstance(result, dict):
+                    if result.get("path"):
+                        modified_paths.append(str(result.get("path")))
+                    validation = result.get("validation")
+                    if isinstance(validation, dict) and validation.get("path"):
+                        modified_paths.append(str(validation.get("path")))
+                    if tool_call.name == "execute_shell":
+                        combined_output = "\n".join(
+                            part for part in [str(result.get("stdout") or ""), str(result.get("stderr") or "")] if part
+                        ).strip()
+                        last_test_output = combined_output[-12000:]
+                    if result.get("status") == "failed":
+                        last_error = str(result.get("error") or result.get("stderr") or "tool failed")
+
+            conversation_history.append({"role": "assistant", "content": assistant_text or f"step {step_index}"})
+            conversation_history.append(
+                {
+                    "role": "user",
+                    "content": self._build_heavy_followup_message(
+                        step_index=step_index,
+                        tool_results=step_tool_results,
+                        last_error=last_error,
+                        last_test_output=last_test_output,
+                    ),
+                }
+            )
+
+            if self._heavy_step_succeeded(step_tool_results, assistant_text):
+                final_status = "completed"
+                if not final_answer:
+                    final_answer = "重タスクの修正と検証が成功しました。"
+                break
+            if step_index == step_limit:
+                final_answer = final_answer or "重タスクは上限ステップまで試行しましたが、完了には至りませんでした。"
+
+        return {
+            "status": final_status,
+            "title": "Heavy task loop",
+            "summary": final_answer,
+            "answer": final_answer,
+            "duration_ms": int((time.time() - started) * 1000),
+            "audit_call_id": final_call_id or heavy_task_id,
+            "heavy_task_id": heavy_task_id,
+            "steps": step_limit if final_status == "completed" else min(step_limit, len(all_tool_results) or step_limit),
+            "tool_results": all_tool_results,
+            "last_error": last_error,
+            "last_test_output": last_test_output,
+            "modified_paths": sorted(dict.fromkeys(modified_paths)),
         }
 
     def _run_loop(self) -> None:
@@ -212,6 +387,55 @@ class AutonomyRuntime:
             response_payload=payload,
             error=payload.get("error") if status != "completed" else None,
         )
+
+    def _build_heavy_followup_message(
+        self,
+        *,
+        step_index: int,
+        tool_results: list[JsonDict],
+        last_error: str,
+        last_test_output: str,
+    ) -> str:
+        summarized_results = json.dumps(tool_results, ensure_ascii=False, default=str)
+        parts = [
+            f"## ステップ {step_index} の結果",
+            summarized_results,
+        ]
+        if last_error:
+            parts.append(f"## 直近エラー\n{last_error}")
+        if last_test_output:
+            parts.append(f"## 直近の実行/検証ログ\n{last_test_output[-6000:]}")
+        parts.append("この結果を踏まえて、必要ならさらに Tool を呼んで修正・検証を続けてください。完了したなら DONE と明記してください。")
+        return "\n\n".join(parts)
+
+    def _heavy_step_succeeded(self, tool_results: list[JsonDict], assistant_text: str) -> bool:
+        normalized_text = (assistant_text or "").casefold()
+        if "done" in normalized_text and not any(
+            (entry.get("result") or {}).get("status") == "failed"
+            for entry in tool_results
+            if isinstance(entry.get("result"), dict)
+        ):
+            return True
+        for entry in tool_results:
+            result = entry.get("result")
+            if not isinstance(result, dict):
+                continue
+            if entry.get("tool") == "execute_shell" and result.get("status") == "completed" and int(result.get("exit_code", 1)) == 0:
+                command = str(result.get("command") or "").casefold()
+                if any(keyword in command for keyword in ("py_compile", "compileall", "pytest", "python -m", "unittest")):
+                    return True
+            if (
+                entry.get("tool") == "self_development"
+                and result.get("status") == "completed"
+                and str(result.get("action") or "").casefold() == "verify"
+            ):
+                validations = result.get("validations")
+                if isinstance(validations, list) and validations and all(
+                    isinstance(validation, dict) and validation.get("status") == "completed"
+                    for validation in validations
+                ):
+                    return True
+        return False
 
 
 def set_global_runtime(runtime: AutonomyRuntime) -> None:

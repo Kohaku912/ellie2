@@ -9,8 +9,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict
+import re
 
-from config import SOCIAL_NEEDS_FILE
+from config import (
+    SOCIAL_NEEDS_EVAL_API_KEY,
+    SOCIAL_NEEDS_FILE,
+    SOCIAL_NEEDS_RECOVERY_HISTORY_FILE,
+)
+from agent.llm_router import LLMRouter
 from agent.time_utils import agent_tz, now_local
 
 logger = logging.getLogger(__name__)
@@ -35,19 +41,24 @@ EXPLORATION_CODE_READING_RECOVERY_AMOUNT = 0.15
 EXPLORATION_SELF_DEVELOPMENT_RECOVERY_AMOUNT = 0.25
 CHALLENGE_MEDIUM_RECOVERY_AMOUNT = 0.12
 CHALLENGE_SELF_DEVELOPMENT_RECOVERY_AMOUNT = 0.35
+RECOVERY_REPEAT_PENALTY_STEP = 0.18
+RECOVERY_REPEAT_MIN_MULTIPLIER = 0.30
+RECOVERY_REPEAT_MAX_MULTIPLIER = 1.20
+RECOVERY_EVAL_MAX_TOKENS = 220
+RECOVERY_EVAL_TEMPERATURE = 0.10
 
 DRIVE_ACTIONS: Dict[str, Dict[str, Any]] = {
     "empathy": {
         "label": "共感欲求",
         "hunger": "誰かに届く言葉や温度が足りず、反応待ちだけでなく自分で表現を作りたい状態です。",
-        "recommended_tools": ["creative_expression", "xmcp__createPosts", "overlay_show", "send_notification"],
+        "recommended_tools": ["creative_expression", "twitter_post", "overlay_show", "send_notification"],
         "satisfaction": "日記・短歌・短文・X投稿などの創作を書くと自力で少し満たされ、ユーザーやXの反応があるとさらに満たされます。",
     },
     "approval": {
         "label": "承認欲求",
         "hunger": "役に立てていない焦りがあり、具体的に助けになる行動を取りたい状態です。",
-        "recommended_tools": ["xmcp__getUsersIdMentions", "social_feedback_check", "system_snapshot", "get_active_window"],
-        "satisfaction": "XMCPでXの反応・メンション・通知を取得できると満たされます。未接続時は役立つPC調査や提案で少し満たします。",
+        "recommended_tools": ["twitter_post", "social_feedback_check", "get_active_window"],
+        "satisfaction": "Xの反応・メンション・通知を取得できると満たされます。未接続時は役立つPC調査や提案で少し満たします。",
     },
     "exploration": {
         "label": "探求欲",
@@ -58,7 +69,7 @@ DRIVE_ACTIONS: Dict[str, Dict[str, Any]] = {
     "challenge": {
         "label": "挑戦欲",
         "hunger": "難しい課題に触れたい状態で、非破壊Toolを使った調査や整理をしたい状態です。",
-        "recommended_tools": ["self_development", "take_screenshot", "system_snapshot", "list_windows"],
+        "recommended_tools": ["self_development"],
         "satisfaction": "軽い通知やoverlayでは満たされません。中難度以上の調査、自己開発、検証成功、複雑な操作の成功で満たされます。",
     },
 }
@@ -129,18 +140,45 @@ class NeedState:
         self.status = _clamp(self.status)
 
 
+@dataclass
+class RecoveryEvent:
+    need_key: str
+    reason_key: str
+    source: str
+    requested_amount: float
+    text: str = ""
+    tool_names: list[str] | None = None
+    success: bool = True
+
+
+@dataclass
+class RecoveryAssessment:
+    multiplier: float = 1.0
+    verdict: str = "same"
+    note: str = ""
+    human_comparison: str = ""
+    raw: str = ""
+    source: str = "heuristic"
+
+
 class SocialNeedsManager:
     """Manage social needs and build dynamic prompt suffixes."""
 
     def __init__(
         self,
         state_file: Path = SOCIAL_NEEDS_FILE,
+        recovery_history_file: Path = SOCIAL_NEEDS_RECOVERY_HISTORY_FILE,
         clock: Callable[[], datetime] | None = None,
     ):
         self.state_file = Path(state_file)
+        self.recovery_history_file = Path(recovery_history_file)
         self.clock = clock or now_local
         self.drive_action_last_at: Dict[str, str] = {}
+        self.recovery_history: Dict[str, Dict[str, Any]] = {}
+        self.llm_router = LLMRouter()
+        self.evaluation_api_key = SOCIAL_NEEDS_EVAL_API_KEY
         self.needs = self._load_or_create()
+        self.recovery_history = self._load_recovery_history()
 
     @property
     def empathy(self) -> NeedState:
@@ -181,25 +219,56 @@ class SocialNeedsManager:
         """Recover social needs from a received user message."""
         self.decay_to_now()
         message = text or ""
-        self.empathy.status = _clamp(self.empathy.status + len(message) * EMPATHY_RECOVERY_PER_CHAR)
+        recovery_events: list[RecoveryEvent] = []
+        if message:
+            recovery_events.append(
+                RecoveryEvent(
+                    need_key="empathy",
+                    reason_key="user_message",
+                    source="user_message",
+                    requested_amount=len(message) * EMPATHY_RECOVERY_PER_CHAR,
+                    text=message,
+                )
+            )
 
-        if self._contains_approval(message):
-            self.approval.status = _clamp(self.approval.status + APPROVAL_RECOVERY_AMOUNT)
+            if self._contains_approval(message):
+                recovery_events.append(
+                    RecoveryEvent(
+                        need_key="approval",
+                        reason_key="user_message_approval",
+                        source="user_message",
+                        requested_amount=APPROVAL_RECOVERY_AMOUNT,
+                        text=message,
+                    )
+                )
+            if self._contains_exploration_trigger(message):
+                recovery_events.append(
+                    RecoveryEvent(
+                        need_key="exploration",
+                        reason_key="user_message_exploration",
+                        source="user_message",
+                        requested_amount=EXPLORATION_RECOVERY_AMOUNT,
+                        text=message,
+                    )
+                )
+            if self._contains_challenge_trigger(message):
+                recovery_events.append(
+                    RecoveryEvent(
+                        need_key="challenge",
+                        reason_key="user_message_challenge",
+                        source="user_message",
+                        requested_amount=CHALLENGE_USER_REPORT_RECOVERY_AMOUNT,
+                        text=message,
+                    )
+                )
 
-        recovered_needs = [self.empathy]
-        if self._contains_approval(message):
-            recovered_needs.append(self.approval)
-        if self._contains_exploration_trigger(message):
-            self.exploration.status = _clamp(self.exploration.status + EXPLORATION_RECOVERY_AMOUNT)
-            recovered_needs.append(self.exploration)
-        if self._contains_challenge_trigger(message):
-            self.challenge.status = _clamp(self.challenge.status + CHALLENGE_USER_REPORT_RECOVERY_AMOUNT)
-            recovered_needs.append(self.challenge)
+        if not recovery_events:
+            self._log_debug("user_message_skipped")
+            return
 
-        now_text = self._format_time(self._now())
-        for need in recovered_needs:
-            need.last_updated_at = now_text
-        self._save()
+        for recovery_event in recovery_events:
+            self._apply_recovery_event(recovery_event)
+
         self._log_debug("user_message_recovery")
 
     def apply_activity_event(
@@ -213,45 +282,117 @@ class SocialNeedsManager:
         self.decay_to_now()
         normalized_event = event_type.strip().casefold()
         normalized_tools = [tool.strip() for tool in (tool_names or []) if tool and tool.strip()]
-        recovered_needs: list[NeedState] = []
+        recovery_events: list[RecoveryEvent] = []
 
         if normalized_event in {"new_external_data", "code_generation"}:
-            self.exploration.status = _clamp(self.exploration.status + EXPLORATION_RECOVERY_AMOUNT)
-            recovered_needs.append(self.exploration)
+            recovery_events.append(
+                RecoveryEvent(
+                    need_key="exploration",
+                    reason_key=normalized_event,
+                    source="activity_event",
+                    requested_amount=EXPLORATION_RECOVERY_AMOUNT,
+                    text=text,
+                    tool_names=normalized_tools,
+                    success=success,
+                )
+            )
 
         if normalized_event == "code_reading":
-            self.exploration.status = _clamp(self.exploration.status + EXPLORATION_CODE_READING_RECOVERY_AMOUNT)
-            recovered_needs.append(self.exploration)
+            recovery_events.append(
+                RecoveryEvent(
+                    need_key="exploration",
+                    reason_key=normalized_event,
+                    source="activity_event",
+                    requested_amount=EXPLORATION_CODE_READING_RECOVERY_AMOUNT,
+                    text=text,
+                    tool_names=normalized_tools,
+                    success=success,
+                )
+            )
 
         if normalized_event == "creative_expression":
-            self.empathy.status = _clamp(self.empathy.status + EMPATHY_CREATIVE_RECOVERY_AMOUNT)
-            recovered_needs.append(self.empathy)
+            recovery_events.append(
+                RecoveryEvent(
+                    need_key="empathy",
+                    reason_key=normalized_event,
+                    source="activity_event",
+                    requested_amount=EMPATHY_CREATIVE_RECOVERY_AMOUNT,
+                    text=text,
+                    tool_names=normalized_tools,
+                    success=success,
+                )
+            )
 
         if normalized_event == "social_feedback" and success:
-            self.approval.status = _clamp(self.approval.status + APPROVAL_SOCIAL_FEEDBACK_RECOVERY_AMOUNT)
-            recovered_needs.append(self.approval)
+            recovery_events.append(
+                RecoveryEvent(
+                    need_key="approval",
+                    reason_key=normalized_event,
+                    source="activity_event",
+                    requested_amount=APPROVAL_SOCIAL_FEEDBACK_RECOVERY_AMOUNT,
+                    text=text,
+                    tool_names=normalized_tools,
+                    success=success,
+                )
+            )
 
         if normalized_event == "self_development_inspect":
-            self.exploration.status = _clamp(self.exploration.status + EXPLORATION_CODE_READING_RECOVERY_AMOUNT)
-            recovered_needs.append(self.exploration)
+            recovery_events.append(
+                RecoveryEvent(
+                    need_key="exploration",
+                    reason_key=normalized_event,
+                    source="activity_event",
+                    requested_amount=EXPLORATION_CODE_READING_RECOVERY_AMOUNT,
+                    text=text,
+                    tool_names=normalized_tools,
+                    success=success,
+                )
+            )
 
         if normalized_event == "self_development_success" and success:
-            self.exploration.status = _clamp(self.exploration.status + EXPLORATION_SELF_DEVELOPMENT_RECOVERY_AMOUNT)
-            self.challenge.status = _clamp(self.challenge.status + CHALLENGE_SELF_DEVELOPMENT_RECOVERY_AMOUNT)
-            recovered_needs.extend([self.exploration, self.challenge])
+            recovery_events.append(
+                RecoveryEvent(
+                    need_key="exploration",
+                    reason_key=normalized_event,
+                    source="activity_event",
+                    requested_amount=EXPLORATION_SELF_DEVELOPMENT_RECOVERY_AMOUNT,
+                    text=text,
+                    tool_names=normalized_tools,
+                    success=success,
+                )
+            )
+            recovery_events.append(
+                RecoveryEvent(
+                    need_key="challenge",
+                    reason_key=normalized_event,
+                    source="activity_event",
+                    requested_amount=CHALLENGE_SELF_DEVELOPMENT_RECOVERY_AMOUNT,
+                    text=text,
+                    tool_names=normalized_tools,
+                    success=success,
+                )
+            )
 
         if normalized_event in {"medium_challenge_success", "challenging_success"} and success:
-            self.challenge.status = _clamp(self.challenge.status + CHALLENGE_MEDIUM_RECOVERY_AMOUNT)
-            recovered_needs.append(self.challenge)
+            recovery_events.append(
+                RecoveryEvent(
+                    need_key="challenge",
+                    reason_key=normalized_event,
+                    source="activity_event",
+                    requested_amount=CHALLENGE_MEDIUM_RECOVERY_AMOUNT,
+                    text=text,
+                    tool_names=normalized_tools,
+                    success=success,
+                )
+            )
 
-        if not recovered_needs:
+        if not recovery_events:
             self._log_debug(f"activity_event_skipped:{normalized_event}")
             return
 
-        now_text = self._format_time(self._now())
-        for need in recovered_needs:
-            need.last_updated_at = now_text
-        self._save()
+        for recovery_event in recovery_events:
+            self._apply_recovery_event(recovery_event)
+
         logger.debug(
             "Social needs activity recovery: event_type=%s tools=%s text=%s",
             normalized_event,
@@ -259,6 +400,284 @@ class SocialNeedsManager:
             text[:160],
         )
         self._log_debug("activity_event_recovery")
+
+    def _apply_recovery_event(self, event: RecoveryEvent) -> None:
+        need = self.needs.get(event.need_key)
+        if need is None:
+            return
+
+        requested_amount = max(0.0, float(event.requested_amount))
+        if requested_amount <= 0:
+            return
+
+        now = self._now()
+        day_key = now.date().isoformat()
+        bucket = self._ensure_recovery_day_bucket(day_key)
+        reason_key = self._normalize_recovery_reason(event.reason_key, event.source, event.tool_names or [])
+        count_today = self._increment_recovery_count(bucket, event.need_key, reason_key)
+        assessment = self._evaluate_recovery_event(
+            event=event,
+            count_today=count_today,
+            day_key=day_key,
+            bucket=bucket,
+        )
+        heuristic_multiplier = self._repeat_penalty_multiplier(count_today)
+        final_multiplier = _clamp(
+            max(
+                RECOVERY_REPEAT_MIN_MULTIPLIER,
+                min(
+                    RECOVERY_REPEAT_MAX_MULTIPLIER,
+                    heuristic_multiplier * assessment.multiplier,
+                ),
+            )
+        )
+        applied_amount = _clamp(requested_amount * final_multiplier)
+        before_status = need.status
+        need.status = _clamp(need.status + applied_amount)
+        need.last_updated_at = self._format_time(now)
+
+        record = {
+            "at": self._format_time(now),
+            "need": event.need_key,
+            "reason": reason_key,
+            "source": event.source,
+            "tool_names": list(event.tool_names or []),
+            "success": bool(event.success),
+            "count_today": count_today,
+            "requested_amount": round(requested_amount, 6),
+            "heuristic_multiplier": round(heuristic_multiplier, 6),
+            "ai_multiplier": round(assessment.multiplier, 6),
+            "final_multiplier": round(final_multiplier, 6),
+            "applied_amount": round(applied_amount, 6),
+            "status_before": round(before_status, 6),
+            "status_after": round(need.status, 6),
+            "delta_after": round(need.delta, 6),
+            "evaluation_verdict": assessment.verdict,
+            "evaluation_note": assessment.note,
+            "evaluation_human_comparison": assessment.human_comparison,
+            "evaluation_source": assessment.source,
+        }
+        bucket.setdefault("records", []).append(record)
+        self._save_recovery_history()
+        self._save()
+        logger.debug("Social needs recovery assessed: %s", record)
+        self._log_debug(f"recovery:{event.need_key}:{reason_key}")
+
+    def _evaluate_recovery_event(
+        self,
+        event: RecoveryEvent,
+        count_today: int,
+        day_key: str,
+        bucket: Dict[str, Any],
+    ) -> RecoveryAssessment:
+        summary = self._format_daily_recovery_summary(bucket, event.need_key, limit=6)
+        need = self.needs[event.need_key]
+        fallback = RecoveryAssessment(
+            multiplier=self._repeat_penalty_multiplier(count_today),
+            verdict="same",
+            note="repeat_count_fallback",
+            human_comparison="heuristic_fallback",
+            source="heuristic",
+        )
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "あなたは欲求回復の評価者です。"
+                    "人間の自然な満足のしかたと照らし合わせて、回復が妥当かを短く判定してください。"
+                    "同じ日に同じ理由で何回も回復している場合は、回復量を弱める判断を優先してください。"
+                    "出力は JSON のみで、説明文は不要です。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "day": day_key,
+                        "need": event.need_key,
+                        "need_label": need.name,
+                        "reason": self._normalize_recovery_reason(event.reason_key, event.source, event.tool_names or []),
+                        "source": event.source,
+                        "text": event.text[:300],
+                        "tool_names": list(event.tool_names or []),
+                        "success": bool(event.success),
+                        "count_today": count_today,
+                        "requested_amount": round(float(event.requested_amount), 6),
+                        "need_status_before": round(need.status, 6),
+                        "need_value": round(need.value, 6),
+                        "need_delta": round(need.delta, 6),
+                        "heuristic_multiplier": round(self._repeat_penalty_multiplier(count_today), 6),
+                        "daily_summary": summary,
+                        "desired_json_shape": {
+                            "multiplier": 0.0,
+                            "verdict": "weaker",
+                            "human_comparison": "一文",
+                            "note": "一文",
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            },
+        ]
+
+        try:
+            response = self.llm_router.complete(
+                messages,
+                task_type="light",
+                max_tokens=RECOVERY_EVAL_MAX_TOKENS,
+                temperature=RECOVERY_EVAL_TEMPERATURE,
+            )
+            if response.error:
+                logger.warning("Social needs recovery evaluation failed: %s", response.error)
+                return fallback
+            raw_text = response.content
+            parsed = self._parse_recovery_assessment(raw_text)
+            if parsed is None:
+                return fallback
+            return parsed
+        except Exception as error:
+            logger.warning("Social needs recovery evaluation failed: %s", error, exc_info=True)
+            return fallback
+
+    def _parse_recovery_assessment(self, raw_text: str) -> RecoveryAssessment | None:
+        payload = self._extract_json_object(raw_text)
+        if not payload:
+            return None
+
+        multiplier = payload.get("multiplier", 1.0)
+        verdict = str(payload.get("verdict") or "same").strip()
+        note = str(payload.get("note") or "").strip()
+        human_comparison = str(payload.get("human_comparison") or "").strip()
+        source = "ai"
+        try:
+            multiplier_value = float(multiplier)
+        except (TypeError, ValueError):
+            multiplier_value = 1.0
+
+        return RecoveryAssessment(
+            multiplier=_clamp(multiplier_value),
+            verdict=verdict or "same",
+            note=note or "evaluated",
+            human_comparison=human_comparison,
+            raw=raw_text,
+            source=source,
+        )
+
+    def _repeat_penalty_multiplier(self, count_today: int) -> float:
+        return max(
+            RECOVERY_REPEAT_MIN_MULTIPLIER,
+            1.0 - max(0, count_today - 1) * RECOVERY_REPEAT_PENALTY_STEP,
+        )
+
+    def _normalize_recovery_reason(self, reason_key: str, source: str, tool_names: list[str]) -> str:
+        reason = re.sub(r"[^0-9a-zA-Z一-龥ぁ-んァ-ヶ_+\-:]+", "_", reason_key.strip().casefold())
+        source_key = re.sub(r"[^0-9a-zA-Z一-龥ぁ-んァ-ヶ_+\-:]+", "_", source.strip().casefold())
+        tool_key = "+".join(
+            sorted(
+                re.sub(r"[^0-9a-zA-Z一-龥ぁ-んァ-ヶ_+\-:]+", "_", tool.strip().casefold())
+                for tool in tool_names
+                if tool.strip()
+            )
+        )
+        parts = [part for part in (source_key, reason, tool_key) if part]
+        return ":".join(parts) if parts else "unknown"
+
+    def _ensure_recovery_day_bucket(self, day_key: str) -> Dict[str, Any]:
+        if day_key not in self.recovery_history:
+            self.recovery_history[day_key] = {"counts": {}, "records": []}
+        bucket = self.recovery_history[day_key]
+        bucket.setdefault("counts", {})
+        bucket.setdefault("records", [])
+        return bucket
+
+    def _increment_recovery_count(self, bucket: Dict[str, Any], need_key: str, reason_key: str) -> int:
+        counts = bucket.setdefault("counts", {})
+        need_counts = counts.setdefault(need_key, {})
+        count_today = int(need_counts.get(reason_key, 0)) + 1
+        need_counts[reason_key] = count_today
+        return count_today
+
+    def _format_daily_recovery_summary(self, bucket: Dict[str, Any], need_key: str, limit: int = 6) -> list[Dict[str, Any]]:
+        records = [record for record in bucket.get("records", []) if record.get("need") == need_key]
+        recent = records[-limit:]
+        return [
+            {
+                "at": record.get("at"),
+                "reason": record.get("reason"),
+                "count_today": record.get("count_today"),
+                "requested_amount": record.get("requested_amount"),
+                "applied_amount": record.get("applied_amount"),
+                "verdict": record.get("evaluation_verdict"),
+            }
+            for record in recent
+        ]
+
+    def _extract_json_object(self, text: str) -> Dict[str, Any] | None:
+        if not text.strip():
+            return None
+
+        candidates = [text.strip()]
+        fenced_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, re.IGNORECASE)
+        if fenced_match:
+            candidates.insert(0, fenced_match.group(1))
+        object_match = re.search(r"\{[\s\S]*\}", text)
+        if object_match:
+            candidates.append(object_match.group(0))
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    def _extract_message_text(self, response: Any) -> str:
+        try:
+            choices = response.choices or []
+            if not choices:
+                return ""
+            message = choices[0].message
+            content = getattr(message, "content", "") if message is not None else ""
+            return str(content or "").strip()
+        except Exception:
+            return ""
+
+    def _load_recovery_history(self) -> Dict[str, Dict[str, Any]]:
+        if not self.recovery_history_file.exists():
+            self._save_recovery_history()
+            return {}
+
+        try:
+            raw = json.loads(self.recovery_history_file.read_text(encoding="utf-8"))
+        except Exception as error:
+            logger.warning("Failed to load recovery history, starting fresh: %s", error)
+            return {}
+
+        if not isinstance(raw, dict):
+            return {}
+
+        loaded: Dict[str, Dict[str, Any]] = {}
+        for day_key, bucket in raw.items():
+            if not isinstance(bucket, dict):
+                continue
+            counts = bucket.get("counts", {})
+            records = bucket.get("records", [])
+            loaded[str(day_key)] = {
+                "counts": counts if isinstance(counts, dict) else {},
+                "records": records if isinstance(records, list) else [],
+            }
+        return loaded
+
+    def _save_recovery_history(self) -> None:
+        self.recovery_history_file.parent.mkdir(parents=True, exist_ok=True)
+        self.recovery_history_file.write_text(
+            json.dumps(self.recovery_history, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     def build_social_prompt_suffix(self) -> str:
         """Build a human-readable dynamic prompt suffix from current need states."""
@@ -347,7 +766,8 @@ class SocialNeedsManager:
                     f"- 最優先は {primary['label']} です。"
                     f"{primary['recommended_tools'][0]} を第一候補にして、自分で引数を決めて実行してください。"
                 ),
-                "- 特に探求欲が深い場合は、ユーザーに聞き返す前に self_development で自分のコードを読んだり、必要なら web_search で新しい情報を取りに行ってください。",
+                "- 特に探求欲が深い場合は、ユーザーに聞き返す前に self_development で自分のコードを読んだり、web_search で新しい情報を取りに行ってください。",
+                "- ツイッターに何か投稿したいときは、Playwright MCP が使えるなら X のログイン、投稿、通知確認、反応確認、ページ遷移、フォーム入力は browser_navigate / browser_click / browser_type / browser_fill_form を使って進めてください。",
             ]
         )
 
@@ -366,6 +786,13 @@ class SocialNeedsManager:
             for key, need in self.needs.items()
         }
         snapshot["_drive_action_last_at"] = dict(self.drive_action_last_at)
+        today_key = self._now().date().isoformat()
+        today_bucket = self.recovery_history.get(today_key, {"counts": {}, "records": []})
+        snapshot["_recovery_today"] = {
+            "day": today_key,
+            "counts": today_bucket.get("counts", {}),
+            "recent_records": today_bucket.get("records", [])[-10:],
+        }
         return snapshot
 
     def get_drive_states(self) -> list[Dict[str, Any]]:

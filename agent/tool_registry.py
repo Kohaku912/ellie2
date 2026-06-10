@@ -114,12 +114,6 @@ def _pc_tool(
 
 PC_TOOL_DEFINITIONS: List[ToolDefinition] = [
     _pc_tool(
-        "system_snapshot",
-        "Return OS, uptime, users, battery, hardware, processes, and active window summary.",
-        ["system", "hardware", "process", "window", "status", "状態", "システム", "概要"],
-        ["PCの状態を確認して", "system overview", "hardware and active window summary"],
-    ),
-    _pc_tool(
         "get_processes",
         "Return running process list.",
         ["process", "task", "running", "pid", "プロセス", "実行中"],
@@ -246,9 +240,9 @@ PC_TOOL_DEFINITIONS: List[ToolDefinition] = [
     _pc_tool("set_clipboard", "Set clipboard text.", ["clipboard", "copy", "paste", "クリップボード"], ["クリップボードに文字を入れて", '{"text":"hello"}']),
     _pc_tool(
         "notify",
-        "Show a desktop notification to actively appeal to the user. Use this when Ellie wants to proactively say something, suggest help, or get attention during autonomous runs instead of only writing text.",
+        "Show a desktop notification only when there is a concrete message, action, result, or deadline to surface. Do not use it for vague offers of help or empty attention-seeking text.",
         ["notify", "notification", "alert", "appeal", "proactive", "通知", "アピール", "知らせる", "話しかける", "提案"],
-        ["自律的にユーザーへ声をかけて", "提案を通知で出して", '{"title":"Ellie","body":"少しだけ手伝えそうなことがあります。"}'],
+        ["具体的な結果を通知して", "締切を通知で出して", '{"title":"Ellie","body":"Xの投稿を1件完了しました。"}'],
         {
             "type": "object",
             "properties": {
@@ -410,7 +404,7 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
     ToolDefinition(
         name="self_development",
         description=(
-            "Local autonomous tool. Inspect, validate, or safely edit Ellie2's own code inside the project root. "
+            "Local autonomous tool. Inspect, queue improvement requests, validate, or safely edit Ellie2's own code inside the project root. "
             "Use it for exploration and challenge drive. Deletion, move, power actions, sensitive files, and paths "
             "outside the Ellie2 project are forbidden. Python edits are accepted only after py_compile succeeds."
         ),
@@ -421,6 +415,7 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
             "verify",
             "py_compile",
             "refactor",
+            "request",
             "exploration",
             "challenge",
             "自己開発",
@@ -440,8 +435,12 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["inspect", "verify", "write_file"],
+                    "enum": ["inspect", "request", "verify", "write_file"],
                     "default": "inspect",
+                },
+                "request": {
+                    "type": "string",
+                    "description": "Short natural-language improvement request to keep for later.",
                 },
                 "focus": {"type": "string", "description": "Inspection theme."},
                 "paths": {
@@ -457,6 +456,45 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
                     "type": "string",
                     "description": "Full file content for write_file.",
                 },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="twitter_profile_edit",
+        description=(
+            "Local autonomous tool. Edit the logged-in X/Twitter profile through Playwright MCP. "
+            "Use it when the user asks to make the profile more like Ellie, to update the display name, bio, location, or website. "
+            "If no fields are provided, it edits the bio with a calm Ellie-style line while keeping identity stable."
+        ),
+        tags=[
+            "twitter",
+            "x",
+            "profile",
+            "bio",
+            "name",
+            "settings",
+            "edit_profile",
+            "playwright",
+            "self_expression",
+            "social",
+            "??????",
+            "????",
+        ],
+        examples=[
+            "???????????????????????",
+            '{"bio":"?????????????????????????AI?"}',
+        ],
+        handler_name="twitter_profile_edit",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Optional display name."},
+                "bio": {"type": "string", "description": "Optional profile bio."},
+                "description": {"type": "string", "description": "Optional profile bio alias."},
+                "location": {"type": "string", "description": "Optional location."},
+                "website": {"type": "string", "description": "Optional website URL."},
+                "url": {"type": "string", "description": "Optional website URL alias."},
             },
             "additionalProperties": False,
         },
@@ -501,6 +539,50 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
         },
     ),
     ToolDefinition(
+        name="twitter_post",
+        description=(
+            "Local autonomous tool. Post a short message to X/Twitter through Playwright MCP. "
+            "Use this when the user explicitly asks to post or tweet something."
+        ),
+        tags=[
+            "twitter",
+            "x",
+            "post",
+            "tweet",
+            "publish",
+            "playwright",
+            "browser",
+            "social",
+            "投稿",
+            "ツイート",
+            "X",
+        ],
+        examples=[
+            "ツイッターに何か投稿して",
+            "Xに短い投稿をして",
+            '{"text":"今日は静かに整えた一日だった。"}',
+        ],
+        handler_name="twitter_post",
+        parameters={
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Text to post on X/Twitter.",
+                },
+                "draft": {
+                    "type": "string",
+                    "description": "Fallback post draft.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Alternate post content field.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
         name="schedule_self_call",
         description=(
             "Local autonomy tool. Schedule Ellie to call herself later without user input. "
@@ -509,7 +591,7 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
         tags=["autonomy", "self_call", "schedule", "long_term", "queue", "自律", "自己呼び出し", "予約", "長期"],
         examples=[
             "30分後に自分でXの反応を確認する",
-            '{"instruction":"XMCPでXの反応を確認し、必要なら返事を考える","run_after_seconds":1800,"reason":"承認欲求の長期充足"}',
+            '{"instruction":"Xの反応を確認し、必要なら返事を考える","run_after_seconds":1800,"reason":"承認欲求の長期充足"}',
         ],
         handler_name="schedule_self_call",
         parameters={
@@ -610,7 +692,7 @@ def get_available_tool_definitions() -> List[ToolDefinition]:
     definitions = list(DEFAULT_TOOL_DEFINITIONS)
     seen_names = {definition.name for definition in definitions}
 
-    for tool in _xmcp_tool_definitions():
+    for tool in _playwright_tool_definitions():
         if tool.name in seen_names:
             continue
         definitions.append(tool)
@@ -658,10 +740,10 @@ def _connected_pc_tool_definitions() -> List[Dict]:
         return []
 
 
-def _xmcp_tool_definitions() -> List[ToolDefinition]:
+def _playwright_tool_definitions() -> List[ToolDefinition]:
     try:
-        from agent.mcp_client import get_xmcp_tool_definitions
+        from agent.playwright_mcp import get_playwright_tool_definitions
 
-        return get_xmcp_tool_definitions()
+        return get_playwright_tool_definitions()
     except Exception:
         return []

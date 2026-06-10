@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from agent.autonomy_runtime import AutonomyRuntime, get_autonomy_status
 from agent.instruction_runner import InstructionRunner
 from agent.logging_utils import configure_utf8_stdio
-from agent.mcp_client import get_xmcp_status
+from agent.playwright_mcp import get_playwright_status
 from agent.time_utils import agent_tz, isoformat_local
 from agent.pc_tool_bridge import (
     get_pc_tool_bridge_status,
@@ -33,6 +33,16 @@ from config import (
     LONG_TERM_MEMORY_FILE,
     MEMORY_DIR,
     MEMORY_FILE,
+    PLAYWRIGHT_DIR,
+    PLAYWRIGHT_MCP_AUTO_INSTALL,
+    PLAYWRIGHT_MCP_BROWSER,
+    PLAYWRIGHT_MCP_ENABLED,
+    PLAYWRIGHT_MCP_HEADLESS,
+    PLAYWRIGHT_MCP_HOST,
+    PLAYWRIGHT_MCP_PORT,
+    PLAYWRIGHT_MCP_SERVER_URL,
+    PLAYWRIGHT_STORAGE_STATE_FILE,
+    PLAYWRIGHT_USER_DATA_DIR,
     SELF_FILE,
     SELF_STATE_FILE,
     SOCIAL_NEEDS_FILE,
@@ -130,7 +140,7 @@ def build_state_snapshot() -> JsonDict:
             **bridge_status,
             "startup_error": _STARTUP_BRIDGE_ERROR or bridge_status.get("startup_error"),
         },
-        "xmcp": get_xmcp_status(),
+        "playwright": get_playwright_status(),
         "autonomy": get_autonomy_status(),
         "tools": _tool_registry_snapshot(),
         "logs": {
@@ -154,8 +164,6 @@ def _ensure_local_request(request: Request) -> None:
 
 
 def _safe_config_snapshot() -> JsonDict:
-    from config import XMCP_AUTO_INSTALL, XMCP_DIR, XMCP_ENABLED, XMCP_SERVER_URL
-
     return {
         "agent_name": AGENT_NAME,
         "agent_timezone": AGENT_TIMEZONE,
@@ -169,11 +177,17 @@ def _safe_config_snapshot() -> JsonDict:
             "memory_dir": str(MEMORY_DIR),
             "log_dir": str(LOG_DIR),
         },
-        "xmcp": {
-            "enabled": XMCP_ENABLED,
-            "auto_install": XMCP_AUTO_INSTALL,
-            "server_url": XMCP_SERVER_URL,
-            "install_dir": str(XMCP_DIR),
+        "playwright": {
+            "enabled": PLAYWRIGHT_MCP_ENABLED,
+            "auto_install": PLAYWRIGHT_MCP_AUTO_INSTALL,
+            "server_url": PLAYWRIGHT_MCP_SERVER_URL,
+            "host": PLAYWRIGHT_MCP_HOST,
+            "port": PLAYWRIGHT_MCP_PORT,
+            "browser": PLAYWRIGHT_MCP_BROWSER,
+            "headless": PLAYWRIGHT_MCP_HEADLESS,
+            "install_dir": str(PLAYWRIGHT_DIR),
+            "user_data_dir": str(PLAYWRIGHT_USER_DATA_DIR),
+            "storage_state_file": str(PLAYWRIGHT_STORAGE_STATE_FILE),
         },
     }
 
@@ -283,7 +297,7 @@ def _tool_registry_snapshot() -> JsonDict:
     return {
         "total_count": len(available_tools),
         "pc_tool_count": len(PC_TOOL_DEFINITIONS),
-        "xmcp_tool_count": len([tool for tool in available_tools if tool.name.startswith("xmcp__")]),
+        "playwright_tool_count": len([tool for tool in available_tools if tool.name.startswith("playwright__")]),
         "tools": [summarize(tool) for tool in available_tools],
     }
 
@@ -645,13 +659,11 @@ INDEX_HTML = r"""<!doctype html>
       const data = await stateResponse.json();
       const auditData = await auditResponse.json();
       const bridge = data.pc_bridge || {};
-      const xmcp = data.xmcp || {};
       const autonomy = data.autonomy || {};
       const tools = data.tools || {};
       el("overview").innerHTML = [
         pill(`generated: ${data.generated_at || "-"}`),
         pill(`PC clients: ${bridge.client_count || 0}`, bridge.client_count ? "good" : "warn"),
-        pill(`XMCP: ${xmcp.status || "unknown"}`, xmcp.ok ? "good" : "warn"),
         pill(`autonomy: ${autonomy.started ? "on" : "standby"}`, autonomy.owns_lock ? "good" : "warn"),
         pill(`self queue: ${autonomy.pending_count || 0}`),
         pill(`tools: ${tools.total_count || 0}`),
@@ -672,8 +684,7 @@ INDEX_HTML = r"""<!doctype html>
       setPre("selfState", ((data.files || {}).state || {}).content);
       el("toolSummary").innerHTML = [
         pill(`total: ${tools.total_count || 0}`),
-        pill(`PC: ${tools.pc_tool_count || 0}`),
-        pill(`XMCP: ${tools.xmcp_tool_count || 0}`)
+        pill(`PC: ${tools.pc_tool_count || 0}`)
       ].join("");
       el("tools").innerHTML = (tools.tools || [])
         .map((tool) => `<span class="tool" title="${escapeHtml(tool.description || "")}">${escapeHtml(tool.name || "")}</span>`)

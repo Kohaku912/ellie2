@@ -165,58 +165,6 @@ def build_tool_context(
     if _is_discord_voice_leave_request(instruction_text):
         return _run_discord_voice_leave(send_audited_pc_tool_call)
 
-    forced_followers_call = _forced_twitter_followers_check_call(instruction_text)
-    if forced_followers_call:
-        from ellie.tools.dynamic_retrieval import ToolCallHandler
-
-        result = ToolCallHandler().handle(
-            forced_followers_call,
-            audit_trace_id=trace_id,
-            audit_parent_id=parent_id,
-            audit_phase="forced_instruction",
-        )
-        if isinstance(result, dict):
-            _apply_local_tool_social_recovery(social_needs, "twitter_followers_check", result)
-        return _format_local_tool_context(
-            "twitter_followers_check",
-            forced_followers_call.get("arguments", {}),
-            result if isinstance(result, dict) else {"status": "failed", "result": result},
-        )
-
-    forced_profile_call = _forced_twitter_profile_edit_call(instruction_text)
-    if forced_profile_call:
-        from ellie.tools.dynamic_retrieval import ToolCallHandler
-
-        result = ToolCallHandler().handle(
-            forced_profile_call,
-            audit_trace_id=trace_id,
-            audit_parent_id=parent_id,
-            audit_phase="forced_instruction",
-        )
-        return _format_local_tool_context(
-            "twitter_profile_edit",
-            forced_profile_call.get("arguments", {}),
-            result if isinstance(result, dict) else {"status": "failed", "result": result},
-        )
-
-    forced_twitter_call = _forced_twitter_post_call(instruction_text)
-    if forced_twitter_call:
-        from ellie.tools.dynamic_retrieval import ToolCallHandler
-
-        result = ToolCallHandler().handle(
-            forced_twitter_call,
-            audit_trace_id=trace_id,
-            audit_parent_id=parent_id,
-            audit_phase="forced_instruction",
-        )
-        if isinstance(result, dict):
-            _apply_local_tool_social_recovery(social_needs, "twitter_post", result)
-        return _format_local_tool_context(
-            "twitter_post",
-            forced_twitter_call.get("arguments", {}),
-            result if isinstance(result, dict) else {"status": "failed", "result": result},
-        )
-
     forced_tool_call = _forced_pc_tool_call(instruction_text)
     if forced_tool_call:
         if str(forced_tool_call.get("tool", "")).startswith("discord_") and forced_tool_call.get("tool") != "discord_status":
@@ -439,49 +387,6 @@ def _forced_pc_tool_call(instruction_text: str) -> JsonDict | None:
         }
     return None
 
-
-def _forced_twitter_post_call(instruction_text: str) -> JsonDict | None:
-    lowered = instruction_text.lower()
-    if not any(word in lowered for word in ("twitter", "x", "ツイ", "tweet", "post", "投稿", "ツイート")):
-        return None
-    if any(word in lowered for word in ("draft", "下書き", "案")) and not any(word in lowered for word in ("tweet", "post", "投稿", "ツイート", "つぶやき")):
-        return None
-    return {
-        "type": "tool_call",
-        "call_id": "twitter-post-forced",
-        "tool": "twitter_post",
-        "arguments": {},
-    }
-
-
-def _forced_twitter_followers_check_call(instruction_text: str) -> JsonDict | None:
-    lowered = instruction_text.lower()
-    if "フォロワー" not in instruction_text and "followers" not in lowered and "follower" not in lowered:
-        return None
-    if not any(word in lowered for word in ("twitter", "x", "ツイ", "tweet", "フォロワー")):
-        return None
-    if not any(word in instruction_text for word in ("確認", "調べ", "見", "count", "number", "数")) and "followers" not in lowered:
-        return None
-    return {
-        "type": "tool_call",
-        "call_id": "twitter-followers-check-forced",
-        "tool": "twitter_followers_check",
-        "arguments": {},
-    }
-
-
-def _forced_twitter_profile_edit_call(instruction_text: str) -> JsonDict | None:
-    lowered = instruction_text.lower()
-    if not any(word in lowered for word in ("twitter", "x", "ツイ", "profile", "bio", "プロフィール", "自己紹介", "表示名")):
-        return None
-    if not any(word in lowered for word in ("update", "edit", "プロフィール", "自己紹介", "表示名", "bio", "name")):
-        return None
-    return {
-        "type": "tool_call",
-        "call_id": "twitter-profile-edit-forced",
-        "tool": "twitter_profile_edit",
-        "arguments": {},
-    }
 
 def _is_discord_voice_join_request(instruction_text: str) -> bool:
     lowered = instruction_text.lower()

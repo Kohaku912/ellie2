@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 JsonDict = Dict[str, Any]
 MANDATORY_CORE_TOOL_NAMES = (
+    "search_tools",
     "web_search",
     "read_file_base64",
     "self_development",
@@ -50,6 +51,20 @@ MANDATORY_CORE_TOOL_NAMES = (
     "agent_replace_string",
     "agent_insert_text",
     "agent_create_file",
+    "agent_add_memory",
+    "agent_search_memory",
+    "agent_add_working_memory",
+    "agent_get_working_memory",
+    "agent_create_episode",
+    "agent_search_episodes",
+    "agent_get_episode",
+    "agent_link_memories",
+    "agent_get_related_memories",
+    "agent_consolidate_memories",
+    "agent_get_memory_stats",
+    "agent_set_core_memory",
+    "agent_get_core_memories",
+    "agent_list_recent_memories",
 )
 
 
@@ -207,6 +222,7 @@ class ToolCallHandler:
             return result
 
         handlers = {
+            "search_tools": self._handle_search_tools,
             "web_search": self._handle_web_search,
             "read_file_base64": self._handle_read_file_base64,
             "list_directory": self._handle_list_directory,
@@ -220,6 +236,20 @@ class ToolCallHandler:
             "update_long_term_goal": self._handle_update_long_term_goal,
             "send_notification": self._handle_send_notification,
             "record_user_event": self._handle_record_user_event,
+            "agent_add_memory": self._handle_agent_add_memory,
+            "agent_search_memory": self._handle_agent_search_memory,
+            "agent_add_working_memory": self._handle_agent_add_working_memory,
+            "agent_get_working_memory": self._handle_agent_get_working_memory,
+            "agent_create_episode": self._handle_agent_create_episode,
+            "agent_search_episodes": self._handle_agent_search_episodes,
+            "agent_get_episode": self._handle_agent_get_episode,
+            "agent_link_memories": self._handle_agent_link_memories,
+            "agent_get_related_memories": self._handle_agent_get_related_memories,
+            "agent_consolidate_memories": self._handle_agent_consolidate_memories,
+            "agent_get_memory_stats": self._handle_agent_get_memory_stats,
+            "agent_set_core_memory": self._handle_agent_set_core_memory,
+            "agent_get_core_memories": self._handle_agent_get_core_memories,
+            "agent_list_recent_memories": self._handle_agent_list_recent_memories,
             "self_restart": self._handle_self_restart,
             "agent_read_file": self._handle_agent_read_file,
             "agent_grep_search": self._handle_agent_grep_search,
@@ -362,6 +392,10 @@ class ToolCallHandler:
             },
             "message": "Notification parsed and queued for PC overlay delivery.",
         }
+
+    def _handle_search_tools(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.search_tools import search_tools_handler
+        return search_tools_handler(arguments)
 
     def _handle_web_search(self, arguments: JsonDict) -> JsonDict:
         from ellie.tools.web_search import web_search
@@ -543,6 +577,62 @@ class ToolCallHandler:
     def _handle_agent_create_file(self, arguments: JsonDict) -> JsonDict:
         from ellie.tools.agent_tools import agent_create_file
         return agent_create_file(arguments)
+
+    def _handle_agent_add_memory(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_add_memory
+        return agent_add_memory(arguments)
+
+    def _handle_agent_search_memory(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_search_memory as _asm
+        return _asm(arguments)
+
+    def _handle_agent_add_working_memory(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_add_working_memory
+        return agent_add_working_memory(arguments)
+
+    def _handle_agent_get_working_memory(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_get_working_memory
+        return agent_get_working_memory(arguments)
+
+    def _handle_agent_create_episode(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_create_episode
+        return agent_create_episode(arguments)
+
+    def _handle_agent_search_episodes(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_search_episodes
+        return agent_search_episodes(arguments)
+
+    def _handle_agent_get_episode(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_get_episode
+        return agent_get_episode(arguments)
+
+    def _handle_agent_link_memories(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_link_memories
+        return agent_link_memories(arguments)
+
+    def _handle_agent_get_related_memories(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_get_related_memories
+        return agent_get_related_memories(arguments)
+
+    def _handle_agent_consolidate_memories(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_consolidate_memories
+        return agent_consolidate_memories(arguments)
+
+    def _handle_agent_get_memory_stats(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_get_memory_stats
+        return agent_get_memory_stats(arguments)
+
+    def _handle_agent_set_core_memory(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_set_core_memory
+        return agent_set_core_memory(arguments)
+
+    def _handle_agent_get_core_memories(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_get_core_memories
+        return agent_get_core_memories(arguments)
+
+    def _handle_agent_list_recent_memories(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.agent_tools import agent_list_recent_memories
+        return agent_list_recent_memories(arguments)
 
 
 class DynamicToolRAGController:
@@ -758,8 +848,8 @@ class DynamicToolRAGController:
 コア機能は system prompt 先頭の索引にあります。必要なときだけ、関係するものを選んでください。
 
 必要なら、本当に関係するツールだけを選び、妥当なJSON引数で呼び出してください。
-Twitter/X のプロフィール編集が必要なら twitter_profile_edit を使ってください。
-X/Twitter のフォロワー数確認やログイン確認が必要なら twitter_followers_check を使ってください。
+ブラウザ操作が必要なら playwright__browser_navigate / _click / _type / _snapshot 等の
+既存ツールを直接組み合わせて使ってください。self_development で browser tool を作成しないでください。
 ブラウザを開いたら、そこで止めず、必要な入力・遷移・確認・抽出まで続けてください。
 確認や承認が必要なら request_user_approval を使ってください。今すぐ返事が必要なら overlay_prompt、短い案内だけなら overlay_show、急がないなら保留メモに回してください。
 {self._tool_requirement_instruction(drive_action_required)}
@@ -799,6 +889,11 @@ X/Twitter のフォロワー数確認やログイン確認が必要なら twitte
                 continue
             merged.append(tool)
             seen.add(name)
+        # Always include available Playwright MCP tools for browser automation
+        for tool in available_by_name.values():
+            if tool.name.startswith("playwright__") and tool.name not in seen:
+                merged.append(tool)
+                seen.add(tool.name)
         return merged
 
     def _tool_calls_from_result(self, result: Any) -> List[ToolCallRequest]:

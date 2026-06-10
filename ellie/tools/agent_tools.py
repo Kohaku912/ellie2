@@ -214,3 +214,207 @@ def agent_create_file(arguments: JsonDict) -> JsonDict:
         target.unlink(missing_ok=True)
         return {"status": "failed", "tool": "agent_create_file", "error": "validation failed; file removed", "path": path_text, "validation": validation}
     return {"status": "completed", "tool": "agent_create_file", "path": path_text, "validation": validation}
+
+
+# ── Memory Operation Tools ──
+
+
+def agent_add_memory(arguments: JsonDict) -> JsonDict:
+    """Add a new memory/insight to the AI's persistent memory store."""
+    text = str(arguments.get("text") or "").strip()
+    importance = float(arguments.get("importance", 0.5))
+    category = str(arguments.get("category", "general")).strip()
+    is_core = bool(arguments.get("is_core", False))
+    if not text:
+        return {"status": "failed", "tool": "agent_add_memory", "error": "text is required"}
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        mid = mgr.remember(text, emotion="", importance=importance, source="agent", category=category, is_core=is_core)
+        if mid:
+            mgr.add_insight(text)
+        return {"status": "completed" if mid else "failed", "tool": "agent_add_memory", "memory_id": mid, "memory": text, "importance": importance, "category": category, "is_core": is_core}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_add_memory", "error": str(error)}
+
+
+def agent_search_memory(arguments: JsonDict) -> JsonDict:
+    """Search the AI's persistent memory store for relevant entries."""
+    query = str(arguments.get("query") or "").strip()
+    top_k = max(1, min(20, int(arguments.get("top_k", 5))))
+    if not query:
+        return {"status": "failed", "tool": "agent_search_memory", "error": "query is required"}
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        results = mgr.search_memories(query, top_k=top_k)
+        context = mgr.get_relevant_memory_context(query, top_k=top_k)
+        return {
+            "status": "completed", "tool": "agent_search_memory",
+            "query": query, "top_k": top_k,
+            "results": results[:top_k],
+            "context": context,
+        }
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_search_memory", "error": str(error)}
+
+
+def agent_add_working_memory(arguments: JsonDict) -> JsonDict:
+    """Add a short-term working memory item. Use for temporary context."""
+    text = str(arguments.get("text") or "").strip()
+    importance = float(arguments.get("importance", 0.5))
+    ttl = max(60, int(arguments.get("ttl_seconds", 3600)))
+    if not text:
+        return {"status": "failed", "tool": "agent_add_working_memory", "error": "text is required"}
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        wid = mgr.add_working_memory(text, importance=importance, ttl_seconds=ttl)
+        return {"status": "completed" if wid else "failed", "tool": "agent_add_working_memory", "id": wid}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_add_working_memory", "error": str(error)}
+
+
+def agent_get_working_memory(arguments: JsonDict) -> JsonDict:
+    """Return active working memory items."""
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        items = mgr.get_working_memory()
+        return {"status": "completed", "tool": "agent_get_working_memory", "items": items, "count": len(items)}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_get_working_memory", "error": str(error)}
+
+
+def agent_create_episode(arguments: JsonDict) -> JsonDict:
+    """Bundle several memories into an episode (a themed group)."""
+    title = str(arguments.get("title") or "").strip()
+    memory_ids = arguments.get("memory_ids", [])
+    if not title or not memory_ids:
+        return {"status": "failed", "tool": "agent_create_episode", "error": "title and memory_ids are required"}
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        eid = mgr.create_episode(title, memory_ids)
+        return {"status": "completed" if eid else "failed", "tool": "agent_create_episode", "episode_id": eid, "title": title}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_create_episode", "error": str(error)}
+
+
+def agent_search_episodes(arguments: JsonDict) -> JsonDict:
+    """Search episodes by semantic similarity."""
+    query = str(arguments.get("query") or "").strip()
+    top_k = max(1, min(20, int(arguments.get("top_k", 5))))
+    if not query:
+        return {"status": "failed", "tool": "agent_search_episodes", "error": "query is required"}
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        results = mgr.search_episodes(query, top_k=top_k)
+        return {"status": "completed", "tool": "agent_search_episodes", "results": results, "count": len(results)}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_search_episodes", "error": str(error)}
+
+
+def agent_get_episode(arguments: JsonDict) -> JsonDict:
+    """Get a specific episode with its member memories."""
+    episode_id = int(arguments.get("episode_id", 0))
+    if not episode_id:
+        return {"status": "failed", "tool": "agent_get_episode", "error": "episode_id is required"}
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        episode = mgr.get_episode(episode_id)
+        return {"status": "completed" if episode else "failed", "tool": "agent_get_episode", "episode": episode}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_get_episode", "error": str(error)}
+
+
+def agent_link_memories(arguments: JsonDict) -> JsonDict:
+    """Create a directed link between two memories (e.g. 'causes', 'associated')."""
+    source_id = int(arguments.get("source_id", 0))
+    target_id = int(arguments.get("target_id", 0))
+    relation = str(arguments.get("relation", "associated")).strip()
+    if not source_id or not target_id:
+        return {"status": "failed", "tool": "agent_link_memories", "error": "source_id and target_id are required"}
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        ok = mgr.link_memories(source_id, target_id, relation=relation)
+        return {"status": "completed" if ok else "failed", "tool": "agent_link_memories", "source_id": source_id, "target_id": target_id, "relation": relation}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_link_memories", "error": str(error)}
+
+
+def agent_get_related_memories(arguments: JsonDict) -> JsonDict:
+    """Get memories linked to/from a given memory."""
+    memory_id = int(arguments.get("memory_id", 0))
+    if not memory_id:
+        return {"status": "failed", "tool": "agent_get_related_memories", "error": "memory_id is required"}
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        related = mgr.get_related_memories(memory_id)
+        return {"status": "completed", "tool": "agent_get_related_memories", "related": related, "count": len(related)}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_get_related_memories", "error": str(error)}
+
+
+def agent_consolidate_memories(arguments: JsonDict) -> JsonDict:
+    """Create consolidated summaries from high-importance linked memories."""
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        summaries = mgr.consolidate_memories()
+        return {"status": "completed", "tool": "agent_consolidate_memories", "summaries": summaries, "count": len(summaries)}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_consolidate_memories", "error": str(error)}
+
+
+def agent_get_memory_stats(arguments: JsonDict) -> JsonDict:
+    """Return aggregate memory statistics."""
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        stats = mgr.get_memory_stats()
+        return {"status": "completed", "tool": "agent_get_memory_stats", "stats": stats}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_get_memory_stats", "error": str(error)}
+
+
+def agent_set_core_memory(arguments: JsonDict) -> JsonDict:
+    """Mark/unmark a memory as a core identity memory."""
+    memory_id = int(arguments.get("memory_id", 0))
+    is_core = bool(arguments.get("is_core", True))
+    if not memory_id:
+        return {"status": "failed", "tool": "agent_set_core_memory", "error": "memory_id is required"}
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        ok = mgr.set_core_memory(memory_id, is_core)
+        return {"status": "completed" if ok else "failed", "tool": "agent_set_core_memory", "memory_id": memory_id, "is_core": is_core}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_set_core_memory", "error": str(error)}
+
+
+def agent_get_core_memories(arguments: JsonDict) -> JsonDict:
+    """Return all core identity memories."""
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        memories = mgr.get_core_memories()
+        return {"status": "completed", "tool": "agent_get_core_memories", "memories": memories, "count": len(memories)}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_get_core_memories", "error": str(error)}
+
+
+def agent_list_recent_memories(arguments: JsonDict) -> JsonDict:
+    """Return recent memories ordered by creation time."""
+    limit = max(1, min(50, int(arguments.get("limit", 15))))
+    try:
+        from ellie.memory.memory import MemoryManager
+        mgr = MemoryManager()
+        memories = mgr.list_recent_memories(limit=limit)
+        return {"status": "completed", "tool": "agent_list_recent_memories", "memories": memories, "count": len(memories)}
+    except Exception as error:
+        return {"status": "failed", "tool": "agent_list_recent_memories", "error": str(error)}

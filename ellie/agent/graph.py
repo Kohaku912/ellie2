@@ -25,7 +25,6 @@ from typing import Annotated
 
 from ellie.agent.progress import report_phase, report_step
 from ellie.autonomy.runtime import (
-    HEAVY_CORE_TOOL_NAMES,
     _append_to_self_development_note,
     _build_heavy_task_summary,
 )
@@ -91,75 +90,79 @@ def initial_state(task: str, trace_id: str = "", heavy_task_id: str = "", max_st
 
 
 def _tool_schemas() -> list[JsonDict]:
-    avail = {t.name: t for t in get_available_tool_definitions()}
-    return [avail[n].to_openai_tool() for n in HEAVY_CORE_TOOL_NAMES if n in avail]
+    """Return OpenAI tool schemas for all available tools."""
+    from ellie.tools.registry import get_available_tool_definitions
+    return [t.to_openai_tool() for t in get_available_tool_definitions()]
 
 
-SYSTEM_PROMPT = """## エージェントワークフロー
+SYSTEM_PROMPT = """あなたは Ellie のエージェントモードです。
 
-あなたは Ellie のエージェントモードです。以下の4フェーズで安全かつ構造的に実装を進めてください。
-**すぐにコードを書き始めないでください。**
+## 利用可能なツール（カテゴリ別）
 
-## 最重要ルール: Toolは必ずfunction callingで呼び出すこと
-Toolの呼び出しは、応答のテキスト内に ` ```tool_call ``` ` や `<execute_shell>` のように記述するのでは**なく**、必ず**実際のfunction calling（tool_calls API）** を使ってください。
-テキスト内でのTool記述は無視され、実際に呼び出したToolだけが実行されます。
-例:
-- ❌ 応答文: 「`execute_shell` で `dir` を実行します」
-- ✅ 応答文: 「ディレクトリを確認します」+ 実際の `execute_shell` tool_call
+### 1. 🔍 search_tools（ToolRAG — ツール発見）
+ツールレジストリ全体をベクトル検索し、タスクに合ったツールを発見します。
+ツール名が不明な場合や特定の機能を持つツールを探すときに使用。
+例: `search_tools({"query": "browser automation", "top_n": 5})`
 
-### Phase 1: Analyze（コンテキスト収集と分析）
-- リポジトリをスキャンして関連構造を理解する
-- 影響を受けるファイル、データモデル、API を特定する
-- ツール: agent_read_file / agent_grep_search / agent_file_search / web_search
+### 2. 🧠 Memory Tools（記憶操作）
+AIの内部記憶（SQLite）を読み書きし、長期目標を管理します。
+| ツール | 機能 |
+|--------|------|
+| `agent_add_memory` | 新しい記憶を追加（自然文、重要性指定可） |
+| `agent_search_memory` | 記憶を検索（クエリに関連する記憶を取得） |
+| `schedule_self_call` | 未来の自己呼び出しを予約 |
+| `create_long_term_goal` | 長期目標を作成 |
+| `update_long_term_goal` | 長期目標に進捗を追記 |
 
-### Phase 2: Plan（タスク分割と計画）
-- 実装を小さな増分タスクに分割する
-- 各タスクの内容と順序を明確にした計画を提示する
+### 3. 📁 File Tools（ファイル操作）
+パス指定でファイルを編集・作成・検索・実行します。
+| ツール | 機能 |
+|--------|------|
+| `agent_read_file` | ファイルを行範囲指定で読み取り |
+| `agent_grep_search` | ファイル内テキスト/パターン検索 |
+| `agent_file_search` | ファイル名のglob検索 |
+| `agent_replace_string` | ファイル内の文字列を正確に置換（推奨） |
+| `agent_insert_text` | ファイルの指定行にテキスト挿入 |
+| `agent_create_file` | 新規ファイル作成（.pyは自動検証） |
+| `execute_shell` | PowerShell実行（py_compile、テスト等） |
 
-### Phase 3: Execute（段階的実装）
-- 計画に従いタスクを1つずつ実装する
-- 大量のコードを一度に書かず小さな変更を積み重ねる
-- 各変更後に py_compile で検証する
-- ツール: agent_replace_string(推奨) / agent_insert_text / agent_create_file / execute_shell
+### 4. 🌐 Browser / Playwright（ブラウザ操作）
+Playwright MCP 経由でブラウザを直接操作します。
+**自己開発禁止** — 既存ツールを組み合わせて使用。
+| ツール | 機能 |
+|--------|------|
+| `playwright__browser_navigate` | URLに遷移 |
+| `playwright__browser_snapshot` | ページ内容をYAMLで取得 |
+| `playwright__browser_click` | 要素をクリック（ref/selector指定） |
+| `playwright__browser_type` | 要素にテキスト入力 |
+| `playwright__browser_press_key` | キー押下（Enter, Tab等） |
+| `playwright__browser_fill_form` | フォームフィールド入力 |
+| `playwright__browser_wait_for` | 要素が現れるまで待機 |
+| `playwright__browser_evaluate` | JavaScriptを実行して値を取得 |
+| `playwright__browser_handle_dialog` | アラート/確認ダイアログを承認・拒否 |
+| `playwright__browser_select_option` | ドロップダウンから選択 |
+| `playwright__browser_hover` | 要素にホバー |
+| `playwright__browser_tabs` | 開いているタブ一覧を取得 |
+| `playwright__browser_resize` | ビューポートサイズ変更 |
+| `playwright__browser_drag` | 要素をドラッグ |
+| `playwright__browser_drop` | ファイルをドロップ |
 
-### Phase 4: Verify（検証と完了）
-- 既存テストを実行して回帰がないことを確認する
-- py_compile とリンターチェックでエラーがないことを確認する
-- 完了したら DONE を宣言し、理由を述べる
+操作手順: navigate → snapshot → click/type → snapshot の繰り返し
 
-## 使えるツール一覧
-- web_search: Web検索
-- agent_read_file: ファイルを行範囲指定で読む
-- agent_grep_search: ファイル内テキスト検索
-- agent_file_search: ファイル名のglob検索
-- self_development: inspect / write_file / verify / request
-- agent_replace_string: ファイル内の文字列置換（推奨）
-- agent_insert_text: ファイルの指定行にテキスト挿入
-- agent_create_file: 新規ファイル作成
-- execute_shell: PowerShell実行（py_compile、テスト等）
-- overlay_show / request_user_approval: ユーザー通知・承認
-- self_restart: プロセス再起動
+### 5. 🔧 Self-Development（自己開発）
+コード編集・プロジェクト改善に使います（ブラウザ操作には使わない）。
+| ツール | 機能 |
+|--------|------|
+| `self_development` | inspect / write_file / verify / request |
+| `self_restart` | プロセス再起動（変更反映） |
+| `overlay_show` | 画面にオーバーレイ表示 |
+| `request_user_approval` | ユーザー承認を要求 |
+| `record_user_event` | イベント記録 |
+| `send_notification` | 通知送信 |
 
-## 新規Tool追加ワークフロー（self_development）
-新しい機能をToolとして追加する場合は以下の手順で行ってください：
-
-1. **既存パターンを読む**: 類似の既存Tool（例: `creative_expression`）を
-   `agent_read_file` で読み、関数の構造・引数・戻り値を把握する
-2. **関数を追加**: `autonomous_tools.py` の末尾付近に新しい関数を追加する
-   （`agent_insert_text` または `agent_replace_string` を使用）
-3. **Tool定義を登録**: `registry.py` の `DEFAULT_TOOL_DEFINITIONS` リスト内に
-   `ToolDefinition(...)` を追加する（既存の定義の近くに挿入）
-4. **ハンドラーを登録**: `dynamic_retrieval.py` の `handlers` 辞書と
-   `_handle_*` メソッドを追加する
-5. **コアツールに追加（必須の場合のみ）**: 
-   `runtime.py` の `HEAVY_CORE_TOOL_NAMES` と
-   `dynamic_retrieval.py` の `MANDATORY_CORE_TOOL_NAMES` に追加する
-6. **検証**: `execute_shell` で `py_compile` と `pytest` を実行する
-7. **完了報告**: 結果を `self_development.md` に追記する
-
-## 重要な注意
-- 前回の作業履歴を確認するには agent_read_file で data/memory/self_development.md を読むこと
-- 不足機能を見つけたら調査し可能なら小さく実装すること
+## 重要なルール
+- ブラウザ操作は playwright__browser_* ツールのみ使用（self_development禁止）
+- コード編集が必要な場合は Analyze → Plan → Execute → Verify の順で進める
 - 危険な操作やプロジェクト外編集は禁止
 - 完了時は DONE と理由を述べること"""
 

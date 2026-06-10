@@ -642,6 +642,178 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
         },
     ),
     ToolDefinition(
+        name="search_tools",
+        description=(
+            "ToolRAG — search the full tool registry for tools relevant to a task. "
+            "Use this when you need a tool but don't know its exact name, or when "
+            "you want to discover what capabilities exist. "
+            "Searches through all registered tools including low-frequency utilities "
+            "and PC/client-connected tools. Returns matching tool definitions with "
+            "descriptions and parameter schemas. The registry contains tools for: "
+            "web search, code search, file operations, browser automation, "
+            "self-development, memory, creativity, scheduling, and connected PC clients."
+        ),
+        tags=["search", "discovery", "toolrag", "registry", "find", "検索", "発見", "ツール"],
+        examples=[
+            "ファイルを編集するためのツールを探す",
+            '{"query":"browser automation navigate click type","top_n":5}',
+            '{"query":"memory store recall"}',
+        ],
+        handler_name="search_tools",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language query describing the capability you need.",
+                },
+                "top_n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": 8,
+                    "description": "Number of matching tools to return.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="agent_add_memory",
+        description="Memory tool. Add a new entry to the AI's persistent memory store. Use this to remember important facts, insights, or events for future reference. Each memory has a text body and optional importance (0.0-1.0).",
+        tags=["agent", "memory", "remember", "insight", "store", "記憶", "保存"],
+        examples=[
+            "今日学んだことを記憶に残す",
+            '{"text":"ユーザーがPython 3.14を使用している","importance":0.7}',
+        ],
+        handler_name="agent_add_memory",
+        parameters={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The natural-language text to remember."},
+                "importance": {"type": "number", "description": "Importance score from 0.0 (trivial) to 1.0 (critical).", "default": 0.5},
+            },
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="agent_search_memory",
+        description="Memory tool. Search the AI's persistent memory store for entries relevant to a query. Returns matching memories and a combined context string. Use this to recall past events, user preferences, or previous decisions.",
+        tags=["agent", "memory", "search", "recall", "retrieve", "記憶", "検索", "想起"],
+        examples=[
+            "ユーザーが前に言っていたことを思い出す",
+            '{"query":"ユーザーの好み","top_k":5}',
+        ],
+        handler_name="agent_search_memory",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query to find relevant memories."},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5, "description": "Number of results to return."},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="agent_add_working_memory",
+        description="Memory tool. Store a short-term working memory item. Working memory has a TTL and expires automatically. Use for temporary context like 'current task', 'recent observation', or 'pending follow-up'.",
+        tags=["memory", "working", "short-term", "temporary", "ワーキングメモリ", "短期"],
+        examples=['{"text":"現在調査中のバグ: ログイン時の400エラー","ttl_seconds":1800}'],
+        handler_name="agent_add_working_memory",
+        parameters={"type":"object","properties":{"text":{"type":"string","description":"Working memory content."},"importance":{"type":"number","default":0.5},"ttl_seconds":{"type":"integer","default":3600,"description":"Time-to-live in seconds."}},"required":["text"],"additionalProperties":False},
+    ),
+    ToolDefinition(
+        name="agent_get_working_memory",
+        description="Memory tool. Return all active (non-expired) working memory items.",
+        tags=["memory","working","recall","ワーキングメモリ"],
+        examples=["今のタスクの進行状況を確認する"],
+        handler_name="agent_get_working_memory",
+        parameters={"type":"object","properties":{},"additionalProperties":False},
+    ),
+    ToolDefinition(
+        name="agent_create_episode",
+        description="Memory tool. Bundle several memories into an episode (a themed group). Use to group related experiences together for later recall.",
+        tags=["memory","episode","bundle","group","エピソード","記憶"],
+        examples=['{"title":"X/TwitterのDM設定作業","memory_ids":[1,2,3]}'],
+        handler_name="agent_create_episode",
+        parameters={"type":"object","properties":{"title":{"type":"string","description":"Episode title."},"memory_ids":{"type":"array","items":{"type":"integer"},"description":"Array of memory IDs to include."}},"required":["title","memory_ids"],"additionalProperties":False},
+    ),
+    ToolDefinition(
+        name="agent_search_episodes",
+        description="Memory tool. Search episodes by semantic similarity. Returns matching episodes with titles and summaries.",
+        tags=["memory","episode","search","recall","エピソード","検索"],
+        examples=['{"query":"X/Twitterの設定","top_k":5}'],
+        handler_name="agent_search_episodes",
+        parameters={"type":"object","properties":{"query":{"type":"string"},"top_k":{"type":"integer","default":5,"minimum":1,"maximum":20}},"required":["query"],"additionalProperties":False},
+    ),
+    ToolDefinition(
+        name="agent_get_episode",
+        description="Memory tool. Get a specific episode with all its member memories.",
+        tags=["memory","episode","detail","エピソード"],
+        examples=['{"episode_id":1}'],
+        handler_name="agent_get_episode",
+        parameters={"type":"object","properties":{"episode_id":{"type":"integer","description":"Episode ID."}},"required":["episode_id"],"additionalProperties":False},
+    ),
+    ToolDefinition(
+        name="agent_link_memories",
+        description="Memory tool. Create a directed link between two memories (e.g. 'causes', 'associated', 'contradicts'). Build associative or causal chains.",
+        tags=["memory","link","associate","causal","chain","リンク","関連"],
+        examples=['{"source_id":1,"target_id":2,"relation":"causes"}'],
+        handler_name="agent_link_memories",
+        parameters={"type":"object","properties":{"source_id":{"type":"integer"},"target_id":{"type":"integer"},"relation":{"type":"string","default":"associated","description":"Relation type: 'causes', 'associated', 'contradicts', etc."}},"required":["source_id","target_id"],"additionalProperties":False},
+    ),
+    ToolDefinition(
+        name="agent_get_related_memories",
+        description="Memory tool. Get memories linked to/from a given memory. Follows associative and causal links.",
+        tags=["memory","link","related","recall","関連記憶"],
+        examples=['{"memory_id":1}'],
+        handler_name="agent_get_related_memories",
+        parameters={"type":"object","properties":{"memory_id":{"type":"integer"}},"required":["memory_id"],"additionalProperties":False},
+    ),
+    ToolDefinition(
+        name="agent_consolidate_memories",
+        description="Memory tool. Create consolidated summaries from high-importance linked memories. Triggers hippocampal-replay-inspired memory consolidation.",
+        tags=["memory","consolidate","summarize","replay","統合","要約"],
+        examples=["最近の重要な記憶を統合する"],
+        handler_name="agent_consolidate_memories",
+        parameters={"type":"object","properties":{},"additionalProperties":False},
+    ),
+    ToolDefinition(
+        name="agent_get_memory_stats",
+        description="Memory tool. Return aggregate memory statistics (total, by category, core count, episodes, links, consolidated summaries, working memory).",
+        tags=["memory","stats","statistics","count","統計"],
+        examples=["記憶の統計を確認する"],
+        handler_name="agent_get_memory_stats",
+        parameters={"type":"object","properties":{},"additionalProperties":False},
+    ),
+    ToolDefinition(
+        name="agent_set_core_memory",
+        description="Memory tool. Mark/unmark a memory as a core identity memory. Core memories define the AI's identity and are recalled with higher priority.",
+        tags=["memory","core","identity","important","核記憶"],
+        examples=['{"memory_id":5,"is_core":true}'],
+        handler_name="agent_set_core_memory",
+        parameters={"type":"object","properties":{"memory_id":{"type":"integer"},"is_core":{"type":"boolean","default":True}},"required":["memory_id"],"additionalProperties":False},
+    ),
+    ToolDefinition(
+        name="agent_get_core_memories",
+        description="Memory tool. Return all memories marked as core identity memories.",
+        tags=["memory","core","identity","recall","核記憶"],
+        examples=["自分の核となる記憶を確認する"],
+        handler_name="agent_get_core_memories",
+        parameters={"type":"object","properties":{},"additionalProperties":False},
+    ),
+    ToolDefinition(
+        name="agent_list_recent_memories",
+        description="Memory tool. Return recent memories ordered by creation time. Useful for browsing what the AI has been thinking about.",
+        tags=["memory","recent","list","browse","履歴"],
+        examples=['{"limit":20}'],
+        handler_name="agent_list_recent_memories",
+        parameters={"type":"object","properties":{"limit":{"type":"integer","default":15,"minimum":1,"maximum":50}},"additionalProperties":False},
+    ),
+    ToolDefinition(
         name="send_notification",
         description="Local skeleton. Send a short notification to the user when the event needs attention.",
         tags=["notify", "notification", "alert", "通知", "知らせる", "アラート"],

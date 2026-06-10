@@ -94,14 +94,64 @@ TEMPERATURE = 0.7
 # Note: For production use, ensure CEREBRAS_API_KEY is set to a valid key in .env or environment
 
 # Lightweight top-level tool index shown to the model before any context-specific ToolRAG content.
-TOOL_CAPABILITY_INDEX = """## コア機能索引
-- web_search: 外部情報を調べる。
-- read_file_base64: ファイル内容を確認する。
-- self_development: このプロジェクトの調査・編集・検証・保留依頼を扱う。
-- execute_shell: PowerShell を実行して検証や自動化を行う。
-- playwright__*: ブラウザを直接操作する。開いて読むだけで終わらず、必要な操作を続ける。
-- overlay_show / overlay_update / overlay_hide: 即時に見せたい短い案内や確認を画面へ出す。
-- request_user_approval: すぐ返事が必要なら overlay、急がない依頼は self_development_requests.md に残す。
+TOOL_CAPABILITY_INDEX = """## 🔍 search_tools（ToolRAG — ツール発見）
+search_tools はツールレジストリ全体をベクトル検索し、タスクに合ったツールを発見します。
+これを使って、ツール名が不明な場合や、特定の機能を持つツールを探すことができます。
+
+検索で見つかるツールの種類:
+- Web検索・コード検索・ファイル操作
+- ブラウザ自動化（Playwright）
+- 自己開発・コード編集・検証
+- AI記憶操作・長期目標管理
+- クリエイティブ表現（日記・短歌・ブログ）
+- PC操作・システム制御（PC Bridge接続時）
+- スケジューリング・自己呼び出し
+
+## 🧠 Memory Tools
+- agent_add_memory: 新しい記憶を追加（カテゴリ・重要度・コア記憶指定可）。
+- agent_search_memory: 記憶を検索・想起。
+- agent_add_working_memory: ワーキングメモリに追加（TTL付き短期記憶）。
+- agent_get_working_memory: 有効なワーキングメモリ一覧を取得。
+- agent_create_episode: 複数の記憶をエピソード（体験の束）にまとめる。
+- agent_search_episodes: エピソードを意味検索。
+- agent_get_episode: エピソードの詳細と構成記憶を取得。
+- agent_link_memories: 記憶間に因果/関連リンクを作成。
+- agent_get_related_memories: リンクされた関連記憶を取得。
+- agent_consolidate_memories: 重要記憶を統合（hippocampal replay風）。
+- agent_get_memory_stats: 記憶の統計情報を取得。
+- agent_set_core_memory: 記憶を核記憶（アイデンティティ）に設定。
+- agent_get_core_memories: 核記憶一覧を取得。
+- agent_list_recent_memories: 最近の記憶を時系列で表示。
+- schedule_self_call: 未来の自己呼び出しを予約。
+- create_long_term_goal / update_long_term_goal: 長期目標の作成・更新。
+
+## 📁 File Tools
+- agent_read_file: ファイルを行範囲指定で読み取り。
+- agent_grep_search: ファイル内のテキスト/正規表現パターンを検索。
+- agent_file_search: ファイル名のglobパターンで検索。
+- agent_replace_string: ファイル内の文字列を正確に置換（推奨）。
+- agent_insert_text: ファイルの指定行にテキスト挿入。
+- agent_create_file: 新規ファイル作成（.pyは自動検証）。
+- execute_shell: PowerShell実行（py_compile、テスト、自動化）。
+- read_file_base64: ファイルをbase64で読み取り。
+
+## 🌐 Browser（playwright__browser_*）
+- playwright__browser_navigate: URLに遷移
+- playwright__browser_snapshot: ページ内容を取得
+- playwright__browser_click: 要素をクリック
+- playwright__browser_type: テキスト入力
+- playwright__browser_press_key: キー押下（Enter等）
+- playwright__browser_fill_form: フォーム入力
+- playwright__browser_wait_for: 要素待機
+- playwright__browser_evaluate: JS実行
+- playwright__browser_handle_dialog: ダイアログ処理
+- playwright__browser_select_option / _hover / _tabs / _resize など全23ツール
+
+## 🔧 Self-Development
+- self_development: inspect / write_file / verify / request（コード編集専用、ブラウザ操作禁止）
+- self_restart: プロセス再起動
+- overlay_show / overlay_update / overlay_hide: 画面表示・更新・非表示
+- request_user_approval: ユーザー承認要求（即時/保留）
 """
 
 # Agent System Prompt

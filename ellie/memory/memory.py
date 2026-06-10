@@ -136,13 +136,70 @@ class MemoryManager:
                     decay_score REAL NOT NULL DEFAULT 1.0,
                     embedding_json TEXT NOT NULL,
                     source TEXT NOT NULL DEFAULT 'manual',
+                    category TEXT NOT NULL DEFAULT 'general',
+                    is_core INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
 
+                -- Note: idx_memories_category and idx_memories_is_core are created
+                -- after schema migration (see _ensure_storage below).
                 CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
                 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
                 CREATE INDEX IF NOT EXISTS idx_memories_normalized_content ON memories(normalized_content);
+
+                CREATE TABLE IF NOT EXISTS episodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    normalized_summary TEXT NOT NULL DEFAULT '',
+                    embedding_json TEXT NOT NULL DEFAULT '[]',
+                    importance REAL NOT NULL DEFAULT 0.5,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS episode_memories (
+                    episode_id INTEGER NOT NULL,
+                    memory_id INTEGER NOT NULL,
+                    PRIMARY KEY(episode_id, memory_id),
+                    FOREIGN KEY(episode_id) REFERENCES episodes(id) ON DELETE CASCADE,
+                    FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_epmem_memory ON episode_memories(memory_id);
+
+                CREATE TABLE IF NOT EXISTS memory_links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id INTEGER NOT NULL,
+                    target_id INTEGER NOT NULL,
+                    relation TEXT NOT NULL DEFAULT 'associated',
+                    strength REAL NOT NULL DEFAULT 1.0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(source_id) REFERENCES memories(id) ON DELETE CASCADE,
+                    FOREIGN KEY(target_id) REFERENCES memories(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_memlinks_source ON memory_links(source_id);
+                CREATE INDEX IF NOT EXISTS idx_memlinks_target ON memory_links(target_id);
+
+                CREATE TABLE IF NOT EXISTS consolidated_memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    summary TEXT NOT NULL,
+                    embedding_json TEXT NOT NULL DEFAULT '[]',
+                    source_memory_ids TEXT NOT NULL DEFAULT '[]',
+                    importance REAL NOT NULL DEFAULT 0.5,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS working_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    importance REAL NOT NULL DEFAULT 0.5,
+                    ttl_seconds INTEGER NOT NULL DEFAULT 3600,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
 
                 CREATE TABLE IF NOT EXISTS daily_stats (
                     date TEXT PRIMARY KEY,
@@ -186,6 +243,21 @@ class MemoryManager:
                 );
                 """
             )
+
+            # ── Schema migration: add columns to existing tables ──
+            needs_index = False
+            for column, col_def in [("category", "TEXT NOT NULL DEFAULT 'general'"), ("is_core", "INTEGER NOT NULL DEFAULT 0")]:
+                try:
+                    conn.execute(f"ALTER TABLE memories ADD COLUMN {column} {col_def}")
+                    needs_index = True
+                except Exception:
+                    pass  # column already exists
+            if needs_index:
+                try:
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_is_core ON memories(is_core)")
+                except Exception:
+                    pass
 
     def _import_legacy_memory_files(self) -> None:
         with self._connect() as conn:
@@ -244,10 +316,14 @@ class MemoryManager:
     # ------------------------------------------------------------------
     # Core memory API
     # ------------------------------------------------------------------
-    def remember(self, content: str, emotion: str = "", importance: float = 0.5, *, source: str = "manual") -> bool:
+    def remember(
+        self, content: str, emotion: str = "", importance: float = 0.5, *,
+        source: str = "manual", category: str = "general", is_core: bool = False,
+    ) -> int:
+        """Store a memory. Returns the new row id (0 on failure)."""
         text = self._clean_text(content)
         if not text:
-            return False
+            return 0
         importance_value = self._clamp(importance)
         normalized_content = self._normalize_text(text)
         created_at = isoformat_local()
@@ -262,18 +338,23 @@ class MemoryManager:
             "decay_score": decay_score,
             "embedding_json": json.dumps(embedding, ensure_ascii=False),
             "source": source,
+            "category": category,
+            "is_core": 1 if is_core else 0,
             "created_at": created_at,
             "updated_at": created_at,
         }
         with self._lock, self._connect() as conn:
-            conn.execute(
+            cur = conn.execute(
                 """
-                INSERT INTO memories(kind, content, normalized_content, emotion, importance, decay_score, embedding_json, source, created_at, updated_at)
-                VALUES(:kind, :content, :normalized_content, :emotion, :importance, :decay_score, :embedding_json, :source, :created_at, :updated_at)
+                INSERT INTO memories(kind, content, normalized_content, emotion, importance,
+                    decay_score, embedding_json, source, category, is_core, created_at, updated_at)
+                VALUES(:kind, :content, :normalized_content, :emotion, :importance,
+                    :decay_score, :embedding_json, :source, :category, :is_core, :created_at, :updated_at)
                 """,
                 payload,
             )
             conn.commit()
+            return cur.lastrowid or 0
         self.session["memory_notes"] = self._load_recent_memories(kind="memory", limit=8)
         self.session["memory_text"] = self._compose_memory_text(self.session)
         return True
@@ -603,6 +684,282 @@ class MemoryManager:
             lines.extend(f"  - {note}" for note in long_term_notes[-3:])
         return "\n".join(lines)
 
+    # ── Working Memory ──────────────────────────────────────────
+
+    def add_working_memory(self, content: str, importance: float = 0.5, ttl_seconds: int = 3600) -> int:
+        """Store a short-term working memory item with TTL."""
+        text = self._clean_text(content)
+        if not text:
+            return 0
+        now = isoformat_local()
+        from ellie.time_utils import now_local
+        expires = (now_local() + __import__("datetime").timedelta(seconds=ttl_seconds)).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM working_memory WHERE expires_at < ?", (now,))
+            cur = conn.execute(
+                "INSERT INTO working_memory(content, importance, ttl_seconds, created_at, expires_at) VALUES(?,?,?,?,?)",
+                (text, self._clamp(importance), ttl_seconds, now, expires),
+            )
+            conn.commit()
+            return cur.lastrowid or 0
+
+    def get_working_memory(self, max_items: int = 10) -> List[Dict[str, Any]]:
+        """Return non-expired working memory items."""
+        now = isoformat_local()
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM working_memory WHERE expires_at < ?", (now,))
+            rows = conn.execute(
+                "SELECT id, content, importance, created_at, expires_at FROM working_memory ORDER BY importance DESC LIMIT ?",
+                (max_items,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def refresh_working_memory(self, content: str, ttl_seconds: int = 3600) -> bool:
+        """Re-set the TTL on a matching working memory item, or add if absent."""
+        matches = self.get_working_memory()
+        for item in matches:
+            if self._normalize_text(content) == self._normalize_text(item.get("content", "")):
+                now = isoformat_local()
+                from ellie.time_utils import now_local
+                expires = (now_local() + __import__("datetime").timedelta(seconds=ttl_seconds)).isoformat()
+                with self._lock, self._connect() as conn:
+                    conn.execute("UPDATE working_memory SET expires_at=? WHERE id=?", (expires, item["id"]))
+                    conn.commit()
+                return True
+        self.add_working_memory(content, ttl_seconds=ttl_seconds)
+        return True
+
+    # ── Episodic Memory ─────────────────────────────────────────
+
+    def create_episode(self, title: str, memory_ids: List[int], importance: float = 0.5) -> int:
+        """Bundle several memories into an episode."""
+        title_text = self._clean_text(title)
+        if not title_text:
+            return 0
+        now = isoformat_local()
+        normalized = self._normalize_text(title_text)
+        embedding = self._embed_text(title_text)
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO episodes(title, summary, normalized_summary, embedding_json, importance, created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
+                (title_text, "", normalized, json.dumps(embedding), self._clamp(importance), now, now),
+            )
+            eid = cur.lastrowid or 0
+            for mid in set(memory_ids):
+                conn.execute("INSERT OR IGNORE INTO episode_memories(episode_id, memory_id) VALUES(?,?)", (eid, mid))
+            conn.commit()
+            return eid
+
+    def search_episodes(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """Search episodes by semantic similarity."""
+        if not query.strip():
+            return []
+        query_vec = self._embed_text(query)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT id, title, summary, importance, created_at, embedding_json FROM episodes ORDER BY created_at DESC").fetchall()
+        scored = []
+        for row in rows:
+            try:
+                emb = json.loads(str(row["embedding_json"]))
+                sim = _cosine_similarity(query_vec, emb) if emb else 0.0
+            except Exception:
+                sim = 0.0
+            d = dict(row)
+            d.pop("embedding_json", None)
+            scored.append((sim, d))
+        scored.sort(key=lambda x: -x[0])
+        return [item[1] for item in scored[:top_k]]
+
+    def get_episode(self, episode_id: int) -> Dict[str, Any]:
+        """Return episode with its member memories."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM episodes WHERE id=?", (episode_id,)).fetchone()
+            if not row:
+                return {}
+            episode = dict(row)
+            members = conn.execute(
+                "SELECT m.id, m.content, m.importance, m.category, m.created_at FROM memories m "
+                "JOIN episode_memories em ON m.id=em.memory_id WHERE em.episode_id=? ORDER BY m.created_at",
+                (episode_id,),
+            ).fetchall()
+            episode["memories"] = [dict(m) for m in members]
+            return episode
+
+    # ── Memory Linking ──────────────────────────────────────────
+
+    def link_memories(self, source_id: int, target_id: int, relation: str = "associated", strength: float = 1.0) -> bool:
+        """Create a directed link between two memories."""
+        if source_id == target_id:
+            return False
+        with self._lock, self._connect() as conn:
+            exists = conn.execute(
+                "SELECT id FROM memory_links WHERE source_id=? AND target_id=? AND relation=?",
+                (source_id, target_id, relation),
+            ).fetchone()
+            if exists:
+                conn.execute("UPDATE memory_links SET strength=? WHERE id=?", (self._clamp(strength), exists["id"]))
+            else:
+                conn.execute(
+                    "INSERT INTO memory_links(source_id, target_id, relation, strength, created_at) VALUES(?,?,?,?,?)",
+                    (source_id, target_id, relation, self._clamp(strength), isoformat_local()),
+                )
+            conn.commit()
+            return True
+
+    def get_related_memories(self, memory_id: int, relation: str = "", max_results: int = 10) -> List[Dict[str, Any]]:
+        """Get memories linked to/from the given memory."""
+        with self._lock, self._connect() as conn:
+            if relation:
+                links = conn.execute(
+                    "SELECT source_id, target_id, relation, strength FROM memory_links "
+                    "WHERE (source_id=? OR target_id=?) AND relation=? ORDER BY strength DESC",
+                    (memory_id, memory_id, relation),
+                ).fetchall()
+            else:
+                links = conn.execute(
+                    "SELECT source_id, target_id, relation, strength FROM memory_links "
+                    "WHERE source_id=? OR target_id=? ORDER BY strength DESC",
+                    (memory_id, memory_id),
+                ).fetchall()
+        related_ids = set()
+        for link in links:
+            other = link["target_id"] if link["source_id"] == memory_id else link["source_id"]
+            related_ids.add(other)
+        if not related_ids:
+            return []
+        with self._lock, self._connect() as conn:
+            placeholders = ",".join("?" for _ in related_ids)
+            rows = conn.execute(f"SELECT id, content, importance, category, created_at FROM memories WHERE id IN ({placeholders})", list(related_ids)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_causal_chain(self, memory_id: int, max_depth: int = 3) -> List[Dict[str, Any]]:
+        """Follow 'causes' links forward from a memory to build a causal chain."""
+        chain = []
+        visited = {memory_id}
+        queue = [memory_id]
+        for _ in range(max_depth):
+            if not queue:
+                break
+            current = queue.pop(0)
+            with self._lock, self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT target_id FROM memory_links WHERE source_id=? AND relation='causes' ORDER BY strength DESC",
+                    (current,),
+                ).fetchall()
+            for row in rows:
+                tid = row["target_id"]
+                if tid not in visited:
+                    visited.add(tid)
+                    queue.append(tid)
+                    with self._lock, self._connect() as conn:
+                        mem = conn.execute("SELECT id, content, importance, category, created_at FROM memories WHERE id=?", (tid,)).fetchone()
+                    if mem:
+                        chain.append(dict(mem))
+        return chain
+
+    # ── Consolidation ───────────────────────────────────────────
+
+    def consolidate_memories(self, max_summaries: int = 10) -> List[Dict[str, Any]]:
+        """Create consolidated summaries from high-importance linked memories."""
+        with self._lock, self._connect() as conn:
+            candidates = conn.execute(
+                "SELECT m.id, m.content, m.importance, COUNT(ml.id) AS link_count "
+                "FROM memories m LEFT JOIN memory_links ml ON m.id=ml.source_id "
+                "WHERE m.importance >= 0.6 GROUP BY m.id ORDER BY m.importance DESC, link_count DESC LIMIT 20"
+            ).fetchall()
+        if not candidates:
+            return []
+        summaries = []
+        for c in candidates:
+            with self._lock, self._connect() as conn:
+                related = conn.execute(
+                    "SELECT m.content FROM memories m JOIN memory_links ml ON m.id=ml.target_id WHERE ml.source_id=? LIMIT 5",
+                    (c["id"],),
+                ).fetchall()
+            related_texts = [r["content"] for r in related if r["content"].strip()]
+            combined = c["content"]
+            if related_texts:
+                combined += " | 関連: " + "; ".join(related_texts[:3])
+            embedding = self._embed_text(combined)
+            now = isoformat_local()
+            source_ids = [c["id"]] + [int(r["id"]) for r in related if "id" in r]
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO consolidated_memories(summary, embedding_json, source_memory_ids, importance, created_at) VALUES(?,?,?,?,?)",
+                    (combined, json.dumps(embedding), json.dumps(source_ids), c["importance"], now),
+                )
+                conn.commit()
+            summaries.append({"summary": combined, "importance": c["importance"], "source_count": len(source_ids)})
+        return summaries[:max_summaries]
+
+    def get_consolidated_summaries(self, top_k: int = 5) -> List[Dict[str, Any]]:
+        """Return the most important consolidated summaries."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, summary, importance, source_memory_ids, created_at FROM consolidated_memories ORDER BY importance DESC LIMIT ?",
+                (top_k,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Core Memories ───────────────────────────────────────────
+
+    def set_core_memory(self, memory_id: int, is_core: bool = True) -> bool:
+        """Mark/unmark a memory as a core identity memory."""
+        with self._lock, self._connect() as conn:
+            conn.execute("UPDATE memories SET is_core=? WHERE id=?", (1 if is_core else 0, memory_id))
+            conn.commit()
+            return conn.execute("SELECT changes()").fetchone()[0] > 0
+
+    def get_core_memories(self) -> List[Dict[str, Any]]:
+        """Return all memories marked as core."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, content, emotion, importance, category, created_at FROM memories WHERE is_core=1 ORDER BY importance DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Memory Statistics ───────────────────────────────────────
+
+    def list_recent_memories(self, limit: int = 15, offset: int = 0) -> List[Dict[str, Any]]:
+        """Return recent memories ordered by creation time."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, content, emotion, importance, category, is_core, created_at FROM memories "
+                "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_memory_stats(self) -> Dict[str, Any]:
+        """Return aggregate memory statistics (backward-compatible extended version)."""
+        with self._lock, self._connect() as conn:
+            memory_count = conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()["c"]
+            long_term_count = conn.execute("SELECT COUNT(*) AS c FROM long_term_notes").fetchone()["c"]
+            insight_count = conn.execute("SELECT COUNT(*) AS c FROM insights").fetchone()["c"]
+            by_category = conn.execute("SELECT category, COUNT(*) AS c FROM memories GROUP BY category ORDER BY c DESC").fetchall()
+            core_count = conn.execute("SELECT COUNT(*) AS c FROM memories WHERE is_core=1").fetchone()["c"]
+            episode_count = conn.execute("SELECT COUNT(*) AS c FROM episodes").fetchone()["c"]
+            link_count = conn.execute("SELECT COUNT(*) AS c FROM memory_links").fetchone()["c"]
+            consolidated = conn.execute("SELECT COUNT(*) AS c FROM consolidated_memories").fetchone()["c"]
+            wm_active = conn.execute("SELECT COUNT(*) AS c FROM working_memory WHERE expires_at > ?", (isoformat_local(),)).fetchone()["c"]
+        return {
+            # Legacy keys (backward compatibility)
+            "memory_db_size": self.db_file.stat().st_size if self.db_file.exists() else 0,
+            "archive_count": len(list(self.archive_dir.glob("memory_*.md"))),
+            "daily_stats": self.get_daily_stats(),
+            "memory_count": int(memory_count),
+            "long_term_note_count": int(long_term_count),
+            "insight_count": int(insight_count),
+            # New keys
+            "total_memories": int(memory_count),
+            "by_category": {r["category"]: r["c"] for r in by_category},
+            "core_memories": int(core_count),
+            "episodes": int(episode_count),
+            "memory_links": int(link_count),
+            "consolidated_summaries": int(consolidated),
+            "active_working_memory_items": int(wm_active),
+        }
+
     def reset_daily_memory(self, long_term_note: str = "") -> bool:
         try:
             if long_term_note.strip() and long_term_note.strip().upper() != "NONE":
@@ -623,22 +980,6 @@ class MemoryManager:
         except Exception as error:
             logger.error("Failed to reset daily memory: %s", error, exc_info=True)
             return False
-
-    def get_memory_stats(self) -> Dict[str, Any]:
-        self.refresh()
-        with self._connect() as conn:
-            memory_count = conn.execute("SELECT COUNT(*) AS count FROM memories").fetchone()["count"]
-            long_term_count = conn.execute("SELECT COUNT(*) AS count FROM long_term_notes").fetchone()["count"]
-            insight_count = conn.execute("SELECT COUNT(*) AS count FROM insights").fetchone()["count"]
-        return {
-            "memory_db_size": self.db_file.stat().st_size if self.db_file.exists() else 0,
-            "archive_count": len(list(self.archive_dir.glob("memory_*.md"))),
-            "daily_stats": self.get_daily_stats(),
-            "total_tasks_today": len(self.session.get("execution_history", [])),
-            "memory_count": int(memory_count),
-            "long_term_note_count": int(long_term_count),
-            "insight_count": int(insight_count),
-        }
 
     # ------------------------------------------------------------------
     # Internal helpers

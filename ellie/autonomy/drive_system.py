@@ -107,7 +107,7 @@ class DriveSystem:
             normalized_tools = [str(tool).strip().casefold() for tool in (tool_names or []) if str(tool).strip()]
             tool_set = set(normalized_tools)
 
-            if normalized_event in {"creative_expression", "social_feedback"} or tool_set & {"twitter_post", "blog_post"}:
+            if normalized_event in {"creative_expression", "social_feedback"} or tool_set & {"blog_post"}:
                 self._recover("expression", 0.22, now=now)
                 self._recover("loneliness", 0.10 if success else 0.05, now=now)
 
@@ -250,7 +250,7 @@ class DriveSystem:
                     satiation_drop=0.28,
                     cooldown_seconds=360,
                     action_prompt="ユーザーとの接点を作り、温かい短文や反応確認で孤独感を下げてください。",
-                    recommended_tools=["overlay_show", "request_user_approval", "twitter_post"],
+                    recommended_tools=["overlay_show", "request_user_approval", "blog_post"],
                 ),
                 "reflection": self._drive_template(
                     key="reflection",
@@ -272,7 +272,7 @@ class DriveSystem:
                     satiation_drop=0.26,
                     cooldown_seconds=420,
                     action_prompt="短い日記、詩、投稿草案などを作って、自分の表現を外に出してください。",
-                    recommended_tools=["creative_expression", "blog_post", "twitter_post"],
+                    recommended_tools=["creative_expression", "blog_post"],
                 ),
             },
         }

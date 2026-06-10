@@ -215,10 +215,6 @@ class ToolCallHandler:
             "blog_post": self._handle_blog_post,
             "self_development": self._handle_self_development,
             "request_user_approval": self._handle_request_user_approval,
-            "social_feedback_check": self._handle_social_feedback_check,
-            "twitter_followers_check": self._handle_twitter_followers_check,
-            "twitter_post": self._handle_twitter_post,
-            "twitter_profile_edit": self._handle_twitter_profile_edit,
             "schedule_self_call": self._handle_schedule_self_call,
             "create_long_term_goal": self._handle_create_long_term_goal,
             "update_long_term_goal": self._handle_update_long_term_goal,
@@ -447,44 +443,20 @@ class ToolCallHandler:
         }
 
     def _handle_creative_expression(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import creative_expression
-
+        from ellie.tools.creative_tools import creative_expression
         return creative_expression(arguments)
 
     def _handle_blog_post(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import blog_post
-
+        from ellie.tools.creative_tools import blog_post
         return blog_post(arguments)
 
     def _handle_self_development(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import self_development
-
+        from ellie.tools.self_development_tools import self_development
         return self_development(arguments)
 
     def _handle_request_user_approval(self, arguments: JsonDict) -> JsonDict:
         from ellie.tools.autonomous_tools import request_user_approval
-
         return request_user_approval(arguments)
-
-    def _handle_social_feedback_check(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import social_feedback_check
-
-        return social_feedback_check(arguments)
-
-    def _handle_twitter_followers_check(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import twitter_followers_check
-
-        return twitter_followers_check(arguments)
-
-    def _handle_twitter_post(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import twitter_post
-
-        return twitter_post(arguments)
-
-    def _handle_twitter_profile_edit(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import twitter_profile_edit
-
-        return twitter_profile_edit(arguments)
 
     def _handle_playwright_tool_call(self, tool_name: str, arguments: JsonDict) -> JsonDict:
         from ellie.mcp.playwright.tools import call_playwright_tool
@@ -549,27 +521,27 @@ class ToolCallHandler:
             }
 
     def _handle_agent_read_file(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import agent_read_file
+        from ellie.tools.agent_tools import agent_read_file
         return agent_read_file(arguments)
 
     def _handle_agent_grep_search(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import agent_grep_search
+        from ellie.tools.agent_tools import agent_grep_search
         return agent_grep_search(arguments)
 
     def _handle_agent_file_search(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import agent_file_search
+        from ellie.tools.agent_tools import agent_file_search
         return agent_file_search(arguments)
 
     def _handle_agent_replace_string(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import agent_replace_string
+        from ellie.tools.agent_tools import agent_replace_string
         return agent_replace_string(arguments)
 
     def _handle_agent_insert_text(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import agent_insert_text
+        from ellie.tools.agent_tools import agent_insert_text
         return agent_insert_text(arguments)
 
     def _handle_agent_create_file(self, arguments: JsonDict) -> JsonDict:
-        from ellie.tools.autonomous_tools import agent_create_file
+        from ellie.tools.agent_tools import agent_create_file
         return agent_create_file(arguments)
 
 
@@ -804,7 +776,7 @@ X/Twitter のフォロワー数確認やログイン確認が必要なら twitte
                 "取得されたツールから最も欲求を満たせる安全なToolを必ず1件以上呼び出してください。"
                 "PC側の一般書込や削除は避けますが、self_development の write_file は Ellie2 配下だけを検証付きで扱う専用Toolなので必要なら使えます。"
                 "playwright__ で始まるブラウザ操作ToolはXのログイン、投稿、通知確認、反応確認、ページ遷移、フォーム入力に使えます。"
-                "ツイッターに何か投稿したいときは twitter_post を優先し、必要なら Playwright MCP で実行してください。"
+
                 "notify は具体的な結果・期限・次の行動がある場合のみ使い、空疎な挨拶や手伝いの申し出だけを通知しないでください。"
             )
         return "不要なら、なぜ今は使わないのかを短く日本語で答えてください。"

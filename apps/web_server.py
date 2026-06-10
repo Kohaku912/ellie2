@@ -69,6 +69,7 @@ except Exception:  # pragma: no cover - optional dependency fallback
             for key, value in data.items():
                 setattr(self, key, value)
 
+from ellie.agent.progress import get_progress_store
 from ellie.autonomy.runtime import AutonomyRuntime, get_autonomy_status, check_restart_signal, perform_restart
 from ellie.core.instruction_runner import InstructionRunner
 from ellie.logging.logging_utils import configure_utf8_stdio
@@ -201,6 +202,17 @@ def api_chat(request: Request, payload: ChatRequest) -> JsonDict:
     with _CHAT_LOCK:
         runner = _get_runner()
         return runner.chat(message)
+
+
+@app.get("/api/chat/progress")
+def api_chat_progress(request: Request) -> JsonDict:
+    """Return the latest agent run progress for the web UI to poll."""
+    _ensure_local_request(request)
+    store = get_progress_store()
+    latest = store.get_latest_run()
+    if latest is None:
+        return {"status": "idle", "steps": []}
+    return latest
 
 
 @app.post("/api/restart")
@@ -551,6 +563,61 @@ INDEX_HTML = r"""<!doctype html>
     .user { background: #28405d; align-self: flex-end; max-width: 92%; }
     .ai { background: var(--panel-2); align-self: flex-start; max-width: 92%; }
     .meta { color: var(--muted); font-size: 12px; margin-top: 6px; }
+    .progress-bar {
+      display: flex;
+      gap: 4px;
+      padding: 10px 0;
+      align-items: center;
+    }
+    .phase-pill {
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      transition: all 0.3s;
+    }
+    .phase-pill.active {
+      background: var(--accent);
+      color: #07111e;
+      border-color: var(--accent);
+    }
+    .phase-pill.done {
+      background: #1a3a2a;
+      color: var(--good);
+      border-color: var(--good);
+    }
+    .step-entry {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 12px;
+      margin: 4px 0;
+      background: #0d1118;
+      font-size: 12px;
+    }
+    .step-entry .step-header {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .step-entry .step-tools {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 4px;
+    }
+    .step-entry .step-tool-tag {
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: #101722;
+      border: 1px solid var(--border);
+      font-size: 10px;
+      color: var(--muted);
+    }
     form {
       display: grid;
       gap: 10px;
@@ -693,10 +760,14 @@ INDEX_HTML = r"""<!doctype html>
   <main>
     <section class="chat">
       <div id="chatLog" class="chat-log">
-        <div class="bubble ai">こんにちは。ここからEllieへ直接話しかけられます。状態パネルは読み取り専用です。</div>
+        <div class="bubble ai">こんにちは。ここからEllieへ直接話しかけられます。エージェントの実行経過はリアルタイムで表示されます。</div>
+      </div>
+      <div id="progressPanel" style="display:none;border-top:1px solid var(--border);padding:10px 14px;background:#0d1118;">
+        <div id="phaseBar" class="progress-bar"></div>
+        <div id="stepList" style="max-height:200px;overflow:auto;"></div>
       </div>
       <form id="chatForm">
-        <textarea id="message" placeholder="例: 俳句を作って"></textarea>
+        <textarea id="message" placeholder="例: ellie/config.py の内容を調査して"></textarea>
         <button id="send" type="submit">送信</button>
       </form>
     </section>
@@ -749,7 +820,7 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </main>
   <script>
-    const state = { busy: false };
+    const state = { busy: false, progressTimer: null };
     const el = (id) => document.getElementById(id);
     const stringify = (value) => typeof value === "string" ? value : JSON.stringify(value, null, 2);
     const setPre = (id, value) => { el(id).textContent = stringify(value ?? ""); };
@@ -758,11 +829,9 @@ INDEX_HTML = r"""<!doctype html>
     const addBubble = (kind, text, meta = "", extra = null) => {
       const bubble = document.createElement("div");
       bubble.className = `bubble ${kind}`;
-      // Main text content
       const textDiv = document.createElement("div");
       textDiv.textContent = text;
       bubble.appendChild(textDiv);
-      // Extra details (full response data)
       if (extra) {
         const toggle = document.createElement("button");
         toggle.textContent = "詳細を表示";
@@ -778,7 +847,6 @@ INDEX_HTML = r"""<!doctype html>
         bubble.appendChild(toggle);
         bubble.appendChild(detailPre);
       }
-      // Meta line
       if (meta) {
         const metaLine = document.createElement("div");
         metaLine.className = "meta";
@@ -789,6 +857,48 @@ INDEX_HTML = r"""<!doctype html>
       el("chatLog").scrollTop = el("chatLog").scrollHeight;
     };
     const pill = (text, tone = "") => `<span class="pill ${tone}">${text}</span>`;
+
+    // ── Agent progress panel ──
+    const PHASES = ["analyze", "plan", "execute", "verify"];
+    const renderProgress = (data) => {
+      const panel = el("progressPanel");
+      if (!data || data.status === "idle") { panel.style.display = "none"; return; }
+      if (data.status === "completed" || data.status === "failed") {
+        if (state.progressTimer) { clearInterval(state.progressTimer); state.progressTimer = null; }
+        panel.style.display = "none";
+        return;
+      }
+      panel.style.display = "block";
+      const phaseBar = el("phaseBar");
+      const cur = data.phase || "";
+      phaseBar.innerHTML = PHASES.map((p) => {
+        const pi = PHASES.indexOf(p);
+        const ci = PHASES.indexOf(cur);
+        let cls = "phase-pill";
+        if (pi < ci) cls += " done";
+        else if (p === cur) cls += " active";
+        return `<span class="${cls}">${p}</span>`;
+      }).join("");
+
+      const stepList = el("stepList");
+      const steps = (data.steps || []).slice(-10);
+      stepList.innerHTML = steps.map((s) => {
+        const tools = (s.tool_calls || []).map((t) => `<span class="step-tool-tag">${escapeHtml(t.name)}</span>`).join("");
+        const preview = s.content_preview ? `<div style="color:var(--muted);font-size:11px;margin-top:2px;">${escapeHtml(s.content_preview.slice(0,150))}</div>` : "";
+        return `<div class="step-entry"><div class="step-header">#${s.step} ${escapeHtml(s.phase)}</div>${tools ? `<div class="step-tools">${tools}</div>` : ""}${preview}</div>`;
+      }).join("");
+      stepList.scrollTop = stepList.scrollHeight;
+    };
+
+    const startProgressPolling = () => {
+      if (state.progressTimer) clearInterval(state.progressTimer);
+      state.progressTimer = setInterval(async () => {
+        try {
+          const res = await fetch("/api/chat/progress");
+          renderProgress(await res.json());
+        } catch (_) {}
+      }, 1000);
+    };
 
     async function refreshState() {
       const [stateResponse, auditResponse] = await Promise.all([
@@ -905,6 +1015,7 @@ INDEX_HTML = r"""<!doctype html>
       el("message").value = "";
       addBubble("user", message);
       const started = performance.now();
+      startProgressPolling();
       try {
         const response = await fetch("/api/chat", {
           method: "POST",
@@ -914,7 +1025,6 @@ INDEX_HTML = r"""<!doctype html>
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || JSON.stringify(data));
         const elapsed = Math.round(performance.now() - started);
-        // Build a clean copy without the answer text (shown separately)
         const extra = { ...data };
         delete extra.answer;
         delete extra.instruction;
@@ -926,6 +1036,8 @@ INDEX_HTML = r"""<!doctype html>
         state.busy = false;
         el("send").disabled = false;
         el("message").focus();
+        if (state.progressTimer) { clearInterval(state.progressTimer); state.progressTimer = null; }
+        el("progressPanel").style.display = "none";
       }
     });
 

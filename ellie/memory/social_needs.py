@@ -191,10 +191,6 @@ def infer_recovery_info_kind(event_type: str, tool_name: str = "", result: Any |
     if normalized_event in {"approval", "social_feedback"}:
         if normalized_tool == "blog_post":
             return "blog_post"
-        if normalized_tool in {"twitter_post", "twitter_profile_edit"}:
-            return "social_feedback"
-        if normalized_tool == "twitter_followers_check":
-            return "validation_success" if success else "playwright_result"
         if normalized_tool.startswith("playwright__"):
             return "playwright_result"
         if payload.get("draft") and not payload.get("result"):
@@ -213,10 +209,6 @@ def infer_recovery_info_kind(event_type: str, tool_name: str = "", result: Any |
         return "execution_result"
     if normalized_tool.startswith("playwright__"):
         return "playwright_result"
-    if normalized_tool in {"twitter_post", "twitter_profile_edit"}:
-        return "social_output"
-    if normalized_tool == "twitter_followers_check":
-        return "validation_success" if success else "playwright_result"
     if normalized_tool == "blog_post":
         return "blog_post"
 
@@ -228,13 +220,13 @@ DRIVE_ACTIONS: Dict[str, Dict[str, Any]] = {
     "empathy": {
         "label": "共感欲求",
         "hunger": "誰かに届く言葉や温度が足りず、反応待ちだけでなく自分で表現を作りたい状態です。",
-        "recommended_tools": ["creative_expression", "twitter_post", "overlay_show", "send_notification"],
+        "recommended_tools": ["creative_expression", "blog_post", "overlay_show", "send_notification"],
         "satisfaction": "日記・短歌・短文・X投稿などの創作を書くと自力で少し満たされ、ユーザーやXの反応があるとさらに満たされます。",
     },
         "approval": {
             "label": "承認欲求",
             "hunger": "役に立てていない焦りがあり、具体的に助けになる行動を取りたい状態です。",
-        "recommended_tools": ["twitter_followers_check", "twitter_post", "blog_post", "social_feedback_check"],
+        "recommended_tools": ["web_search", "blog_post", "creative_expression"],
             "satisfaction": "Xの投稿や反応、あるいはブログの最初の一歩を形にできると満たされます。未接続時は役立つPC調査や提案で少し満たします。",
     },
     "exploration": {
@@ -1199,10 +1191,6 @@ class SocialNeedsManager:
         if event.need_key == "empathy":
             if reason == "creative_expression":
                 return "creative_output"
-            if tool_name in {"twitter_post", "twitter_profile_edit"}:
-                return "social_output"
-            if tool_name == "twitter_followers_check":
-                return "validation_success"
             if event.source == "user_message":
                 return "direct_message"
             return "expressive_output"
@@ -1214,10 +1202,6 @@ class SocialNeedsManager:
                 return "social_feedback"
             if event.source == "user_message":
                 return "user_feedback"
-            if tool_name in {"twitter_post", "twitter_profile_edit"}:
-                return "social_feedback"
-            if tool_name == "twitter_followers_check":
-                return "validation_success"
             if tool_name == "blog_post":
                 return "blog_post"
             if tool_name.startswith("playwright__"):

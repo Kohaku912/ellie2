@@ -771,32 +771,260 @@ async (page) => {{
     }
 
 
+def twitter_dm_check(arguments: JsonDict) -> JsonDict:
+    """Read X/Twitter direct messages through Playwright MCP, with optional PIN code entry."""
+    pin_code = str(arguments.get("pin_code") or "").strip()
+    target_user = str(arguments.get("target_user") or "").strip()
+
+    try:
+        from ellie.mcp.playwright.tools import call_playwright_tool, get_playwright_status
+    except Exception as error:
+        return {
+            "status": "failed",
+            "tool": "twitter_dm_check",
+            "error": f"Playwright MCP is not available: {error}",
+        }
+
+    ready = get_playwright_status()
+    if not ready.get("ok"):
+        return {
+            "status": "unavailable",
+            "tool": "twitter_dm_check",
+            "error": "Playwright MCP is not ready",
+            "playwright_status": ready,
+        }
+
+    navigate_result = call_playwright_tool("playwright__browser_navigate", {"url": "https://x.com/home"})
+    snapshot_result = call_playwright_tool("playwright__browser_snapshot", {})
+
+    snapshot_text = _extract_snapshot_text(snapshot_result)
+    login_markers = ("Sign in", "Log in", "/i/flow/login", "/login")
+    if any(marker in snapshot_text for marker in login_markers):
+        opened_login_screen = call_playwright_tool("playwright__browser_navigate", {"url": "https://x.com/i/flow/login"})
+        return {
+            "status": "login_required",
+            "tool": "twitter_dm_check",
+            "playwright_result": {
+                "navigate": navigate_result,
+                "snapshot": snapshot_result,
+                "opened_login_screen": opened_login_screen,
+            },
+            "memory_note": "Opened the X/Twitter login screen automatically before checking DMs.",
+        }
+
+    # Build JS code for DM check operation
+    code = f"""
+async (page) => {{
+  const pinCode = {json.dumps(pin_code or "", ensure_ascii=False)};
+
+  // Go to home first to confirm login state
+  const homeUrls = ['https://x.com/home', 'https://twitter.com/home'];
+  for (const url of homeUrls) {{
+    try {{
+      await page.goto(url, {{ waitUntil: 'domcontentloaded', timeout: 60000 }});
+      await page.waitForTimeout(2000);
+      break;
+    }} catch (error) {{ continue; }}
+  }}
+
+  const bodyText = await page.locator('body').innerText({{ timeout: 10000 }}).catch(() => '');
+  const currentUrl = page.url();
+  const loginMarkers = ['Sign in', 'Log in', '/i/flow/login', '/login'];
+  if (currentUrl.includes('/i/flow/login') || loginMarkers.some((m) => bodyText.includes(m))) {{
+    return {{ status: 'login_required', url: page.url(), message: 'X/Twitter login is required.' }};
+  }}
+
+  // Navigate to DM page
+  await page.goto('https://x.com/messages', {{ waitUntil: 'domcontentloaded', timeout: 60000 }});
+  await page.waitForTimeout(3000);
+
+  let pageText = await page.locator('body').innerText({{ timeout: 10000 }}).catch(() => '');
+  let pageUrl = page.url();
+
+  // Check if PIN/verification code is requested
+  const pinMarkers = ['確認コード', 'verification code', 'PIN', 'enter the code', 'コードを入力'];
+  const needsPin = pinMarkers.some((m) => pageText.includes(m)) || pageUrl.includes('challenge');
+
+  if (needsPin && pinCode) {{
+    // Try to find the PIN input field and enter the code
+    const inputSelectors = [
+      'input[name="verification_code"]',
+      'input[inputmode="numeric"]',
+      'input[type="text"]',
+      'input[type="tel"]',
+    ];
+    let input = null;
+    for (const sel of inputSelectors) {{
+      const candidate = page.locator(sel).first();
+      try {{ if (await candidate.count()) {{ input = candidate; break; }} }} catch (e) {{ continue; }}
+    }}
+    if (input) {{
+      await input.click({{ timeout: 5000 }});
+      await input.fill(pinCode, {{ timeout: 5000 }});
+      await page.waitForTimeout(500);
+
+      // Press Enter or click submit
+      const submitButtons = [
+        'button[type="submit"]',
+        'div[role="button"]:has-text("確認")',
+        'div[role="button"]:has-text("Verify")',
+        'div[role="button"]:has-text("次へ")',
+        'div[role="button"]:has-text("Next")',
+      ];
+      let submitted = false;
+      for (const sel of submitButtons) {{
+        try {{
+          const btn = page.locator(sel).first();
+          if (await btn.count()) {{ await btn.click({{ timeout: 5000 }}); submitted = true; break; }}
+        }} catch (e) {{ continue; }}
+      }}
+      if (!submitted) {{
+        await page.keyboard.press('Enter');
+      }}
+      await page.waitForTimeout(3000);
+    }}
+  }}
+
+  // Navigate to DM page again (after PIN entry)
+  await page.goto('https://x.com/messages', {{ waitUntil: 'domcontentloaded', timeout: 60000 }});
+  await page.waitForTimeout(3000);
+
+  pageText = await page.locator('body').innerText({{ timeout: 10000 }}).catch(() => '');
+  pageUrl = page.url();
+
+  // Extract DM conversation list
+  const conversationLinks = await page.locator('a[href*="/messages/"]').evaluateAll((els) =>
+    els.map((el) => ({{ href: el.getAttribute('href') || '', text: (el.innerText || el.textContent || '').trim().slice(0, 200) }}))
+      .filter((item) => item.href && item.text)
+  ).catch(() => []);
+
+  // Get all visible text for DM content
+  const bodyPreview = pageText.slice(0, 5000);
+
+  // Try clicking the first conversation to read its content
+  let firstConversationContent = '';
+  if (conversationLinks.length > 0) {{
+    try {{
+      const firstLink = page.locator('a[href*="/messages/"]').first();
+      if (await firstLink.count()) {{
+        await firstLink.click({{ timeout: 10000 }});
+        await page.waitForTimeout(2000);
+        firstConversationContent = await page.locator('body').innerText({{ timeout: 10000 }}).catch(() => '');
+      }}
+    }} catch (e) {{ /* ignore */ }}
+  }}
+
+  return {{
+    status: 'completed',
+    url: pageUrl,
+    title: await page.title().catch(() => ''),
+    dm_page_preview: bodyPreview.slice(0, 3000),
+    conversation_count: conversationLinks.length,
+    conversations: conversationLinks.slice(0, 10),
+    first_conversation_content: firstConversationContent.slice(0, 3000) || '',
+    pin_was_used: needsPin && Boolean(pinCode),
+    pin_required: needsPin,
+    message: needsPin && !pinCode
+      ? 'PIN code is required to access DMs. Please provide the code.'
+      : `Found {conversationLinks.length} DM conversations.`,
+  }};
+}}
+"""
+
+    result = call_playwright_tool("playwright__browser_run_code_unsafe", {"code": code})
+    payload = result.get("result") if isinstance(result, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {"value": payload}
+
+    status = str(payload.get("status") or result.get("status") or "").strip().casefold()
+    if status == "login_required":
+        opened_login_screen = call_playwright_tool("playwright__browser_navigate", {"url": "https://x.com/i/flow/login"})
+        payload["opened_login_screen"] = opened_login_screen
+        return {
+            "status": "login_required",
+            "tool": "twitter_dm_check",
+            "playwright_result": payload,
+            "memory_note": "Opened the X/Twitter login screen automatically before checking DMs.",
+        }
+
+    if status != "completed":
+        return {
+            "status": "failed",
+            "tool": "twitter_dm_check",
+            "playwright_result": payload,
+            "memory_note": "Attempted to check X/Twitter DMs through Playwright MCP, but it did not complete.",
+        }
+
+    pin_required = bool(payload.get("pin_required", False))
+    pin_was_used = bool(payload.get("pin_was_used", False))
+
+    return {
+        "status": "completed",
+        "tool": "twitter_dm_check",
+        "playwright_result": payload,
+        "pin_required": pin_required,
+        "pin_was_used": pin_was_used,
+        "conversations": payload.get("conversations", []),
+        "dm_content": payload.get("first_conversation_content", "") or payload.get("dm_page_preview", ""),
+        "memory_note": "Checked X/Twitter DMs through Playwright MCP."
+            + (" PIN code was used." if pin_was_used else ""),
+    }
+
+
 def _self_development_inspect(arguments: JsonDict) -> JsonDict:
-    focus = str(arguments.get("focus") or "欲求充足ロジック").strip()
-    candidate_files = [
-        "ellie/memory/social_needs.py",
-        "ellie/core/agent.py",
-        "ellie/tools/dynamic_retrieval.py",
-        "data/self/self_development_requests.md",
-    ]
-    existing_files = [path for path in candidate_files if (BASE_DIR / path).exists()]
+    focus = str(arguments.get("focus") or "").strip()
     request_text = _read_text(SELF_DEVELOPMENT_REQUESTS_NOTE)
     pending_requests = _extract_request_bullets(request_text)
-    suggestions = [
-        f"{focus}に関係する条件分岐を読み、軽いTool成功で過剰回復しないように分類を強める。",
-        "自律行動の成功種類をresultに残し、欲求回復をその分類から決める。",
-        "自己開発後はpy_compileを通してから探求欲・挑戦欲を回復する。",
-    ]
-    _append_note(SELF_DEVELOPMENT_NOTE, f"{isoformat_local()} inspect {focus}: {' / '.join(suggestions)}")
+
+    # Scan the tool registry to show the pattern
+    registry_path = BASE_DIR / "ellie" / "tools" / "registry.py"
+    handler_path = BASE_DIR / "ellie" / "tools" / "dynamic_retrieval.py"
+    tools_path = BASE_DIR / "ellie" / "tools" / "autonomous_tools.py"
+
+    # Extract existing tool names from registry
+    existing_tools = []
+    if registry_path.exists():
+        text = registry_path.read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('name="') and stripped.endswith('",'):
+                name = stripped[5:-2]
+                existing_tools.append(name)
+
+    # Find handler names in dynamic_retrieval.py
+    handler_count = 0
+    if handler_path.exists():
+        text = handler_path.read_text(encoding="utf-8", errors="replace")
+        handler_count = text.count('"agent_') + text.count('"twitter_') + text.count('"self_') + text.count('"web_') + text.count('"read_') + text.count('"execute_') + text.count('"creative_') + text.count('"blog_') + text.count('"request_') + text.count('"social_') + text.count('"schedule_') + text.count('"create_') + text.count('"update_') + text.count('"send_') + text.count('"record_')
+
+    # Count lines in key files
+    tools_lines = len(tools_path.read_text(encoding="utf-8", errors="replace").splitlines()) if tools_path.exists() else 0
+
+    suggestions = []
+    if focus:
+        suggestions.append(f"「{focus}」に関連する既存の実装パターンを agent_read_file / agent_grep_search で調査してください。")
+    suggestions.append("新規Tool追加の手順:")
+    suggestions.append("  1. 既存の類似Tool（例: twitter_followers_check）を agent_read_file で読んでパターンを把握する")
+    suggestions.append("  2. autonomous_tools.py に関数を追加する（agent_replace_string または agent_insert_text）")
+    suggestions.append("  3. registry.py に ToolDefinition を追加する")
+    suggestions.append("  4. dynamic_retrieval.py に handler を追加する")
+    suggestions.append("  5. 必要に応じて runtime.py の HEAVY_CORE_TOOL_NAMES に追加する")
+    suggestions.append("  6. execute_shell で py_compile を実行して検証する")
+    suggestions.append("  7. execute_shell で pytest を実行して回帰テストを行う")
+    suggestions.append(f"\n現在のTool一覧 ({len(existing_tools)}個): {', '.join(existing_tools[:30])}")
+
+    _append_note(SELF_DEVELOPMENT_NOTE, f"{isoformat_local()} inspect {focus or 'general'}")
     return {
         "status": "completed",
         "tool": "self_development",
         "action": "inspect",
-        "focus": focus,
-        "files_considered": existing_files,
+        "focus": focus or "general",
+        "existing_tool_count": len(existing_tools),
+        "existing_tools": existing_tools[:30],
+        "handler_count": handler_count,
         "pending_requests": pending_requests,
         "suggestions": suggestions,
-        "memory_note": "自己開発としてコード改善点を点検した。",
+        "memory_note": "自己開発としてコードベースを点検した。",
     }
 
 

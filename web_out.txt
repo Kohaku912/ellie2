@@ -1,0 +1,3 @@
+2026-06-10 22:19:59,589 - __main__ - INFO - Starting Ellie web dashboard at http://127.0.0.1:8080
+2026-06-10 22:19:59,685 - websockets.server - INFO - server listening on 127.0.0.1:8765
+2026-06-10 22:19:59,711 - ellie.mcp.pc_bridge.bridge - INFO - PC tool bridge listening on ws://127.0.0.1:8765

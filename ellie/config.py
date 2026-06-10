@@ -21,7 +21,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 DEEPSEEK_REASONING_EFFORT = os.getenv("DEEPSEEK_REASONING_EFFORT", "high")
-HEAVY_TASK_MAX_STEPS = max(20, int(os.getenv("HEAVY_TASK_MAX_STEPS", "20")))
+HEAVY_TASK_MAX_STEPS = max(8, int(os.getenv("HEAVY_TASK_MAX_STEPS", "10")))
 
 # Agent Configuration
 AGENT_TIMEZONE = os.getenv("AGENT_TIMEZONE", "Asia/Tokyo")
@@ -100,7 +100,6 @@ TOOL_CAPABILITY_INDEX = """## コア機能索引
 - self_development: このプロジェクトの調査・編集・検証・保留依頼を扱う。
 - execute_shell: PowerShell を実行して検証や自動化を行う。
 - playwright__*: ブラウザを直接操作する。開いて読むだけで終わらず、必要な操作を続ける。
-- twitter_followers_check: X/Twitter に開いてログイン確認とフォロワー数の確認を行う。
 - overlay_show / overlay_update / overlay_hide: 即時に見せたい短い案内や確認を画面へ出す。
 - request_user_approval: すぐ返事が必要なら overlay、急がない依頼は self_development_requests.md に残す。
 """

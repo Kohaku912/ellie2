@@ -22,6 +22,8 @@ from ellie.config import (
     AUTONOMY_QUEUE_FILE,
     HEAVY_TASK_MAX_STEPS,
     LONG_TERM_GOALS_FILE,
+    MEMORY_DIR,
+    RUNTIME_DIR,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,13 @@ HEAVY_CORE_TOOL_NAMES = (
     "overlay_show",
     "request_user_approval",
     "twitter_followers_check",
+    "self_restart",
+    "agent_read_file",
+    "agent_grep_search",
+    "agent_file_search",
+    "agent_replace_string",
+    "agent_insert_text",
+    "agent_create_file",
 )
 
 
@@ -158,12 +167,31 @@ class AutonomyRuntime:
                 )
             )
             heavy_rules = (
-                "これは重タスクの同期実行セッションです。"
+                "これは重タスクの同期実行セッション（エージェントモード）です。"
                 "コード修正・調査・実行検証を同じ文脈のまま粘り強く続けてください。"
-                "使えるコアツールは web_search / read_file_base64 / self_development / execute_shell / overlay_show / request_user_approval / twitter_followers_check です。"
-                "X/Twitter の確認やログイン案内が必要なら twitter_followers_check を使い、必要なら request_user_approval と overlay_show でユーザーに知らせてから続きを進めてください。"
-                "ブラウザを開いたところで止めず、入力・遷移・確認・抽出まで最後まで進めてください。"
-                "必要なら self_development で inspect・write_file・verify を行い、execute_shell で py_compile やテストを実行してください。"
+                "使えるツール一覧:\n"
+                "- web_search: Web検索\n"
+                "- read_file_base64: ファイルをbase64で読む\n"
+                "- agent_read_file: ファイルを行範囲指定で読む（テキスト）\n"
+                "- agent_grep_search: ファイル内テキスト/パターン検索\n"
+                "- agent_file_search: ファイル名のglob検索\n"
+                "- self_development: inspect（調査）/ write_file（全書換）/ verify（検証）/ request（保留依頼）\n"
+                "- agent_replace_string: ファイル内の文字列を正確に置換（VS Codeの編集相当）\n"
+                "- agent_insert_text: ファイルの指定行にテキスト挿入\n"
+                "- agent_create_file: 新規ファイル作成\n"
+                "- execute_shell: PowerShellコマンド実行（py_compile、テスト等）\n"
+                "- overlay_show / request_user_approval: ユーザー通知・承認\n"
+                "- twitter_followers_check / self_restart\n\n"
+                "手順の指針:\n"
+                "1. まず過去の開発履歴を確認するため、agent_read_file で self_development.md を読む\n"
+                "2. agent_read_file / agent_grep_search / agent_file_search で現状を把握する\n"
+                "3. 修正が必要なら agent_replace_string（推奨）または agent_insert_text で部分編集する\n"
+                "4. 新しいファイルが必要なら agent_create_file を使う\n"
+                "5. execute_shell で py_compile やテストを実行して検証する\n"
+                "6. エラーが出たら内容を読み、次手を変えて再試行する\n"
+                "7. 完了したら self_development.md に今回の変更を追記する（agent_insert_text でファイル末尾に追記）\n\n"
+                "重要: このタスクの前に同じような作業をしていたら、まず data/memory/self_development.md を読んで\n"
+                "前回どこまで進んだかを確認してから続きを始めてください。\n"
                 "不足機能を見つけたら、まず調査し、可能なら小さく実装し、危険な操作やプロジェクト外編集は行わないでください。"
                 "各ステップでは可能な限り1件以上の Tool を呼び、失敗したらエラーを踏まえて次手を変えてください。"
                 "完了できたと判断した場合だけ、短い日本語で DONE と書き、その理由を1〜3文で述べてください。"
@@ -291,11 +319,23 @@ class AutonomyRuntime:
                 if step_index == step_limit:
                     final_answer = final_answer or "重タスクは上限ステップまで試行しましたが、完了には至りませんでした。"
 
+            # ── Save a summary of what was done to the self-development note ──
+            unique_paths = sorted(dict.fromkeys(modified_paths))
+            change_summary = _build_heavy_task_summary(
+                instruction=task_text,
+                status=final_status,
+                answer=final_answer,
+                paths=unique_paths,
+                tool_results=all_tool_results,
+            )
+            _append_to_self_development_note(change_summary)
+
             return {
                 "status": final_status,
                 "title": "Heavy task loop",
                 "summary": final_answer,
                 "answer": final_answer,
+                "change_summary": change_summary,
                 "duration_ms": int((time.time() - started) * 1000),
                 "audit_call_id": final_call_id or heavy_task_id,
                 "heavy_task_id": heavy_task_id,
@@ -303,7 +343,7 @@ class AutonomyRuntime:
                 "tool_results": all_tool_results,
                 "last_error": last_error,
                 "last_test_output": last_test_output,
-                "modified_paths": sorted(dict.fromkeys(modified_paths)),
+                "modified_paths": unique_paths,
             }
 
     def _run_loop(self) -> None:
@@ -662,6 +702,51 @@ def _read_goals_summary(goals_file: Path, max_chars: int = 4000) -> str:
     return text[-max_chars:] if len(text) > max_chars else text
 
 
+# ── Heavy task result persistence ───────────────────────────────
+
+SELF_DEVELOPMENT_NOTE = MEMORY_DIR / "self_development.md"
+
+
+def _build_heavy_task_summary(
+    instruction: str,
+    status: str,
+    answer: str,
+    paths: list[str],
+    tool_results: list[JsonDict],
+) -> str:
+    """Build a concise summary of what the heavy task loop accomplished."""
+    now = isoformat_local()
+    changes = []
+    for entry in tool_results[-30:]:  # last 30 tool calls
+        tool_name = str(entry.get("tool") or "")
+        if tool_name in ("agent_replace_string", "agent_insert_text", "agent_create_file", "self_development"):
+            args = entry.get("arguments") or {}
+            result = entry.get("result") or {}
+            if result.get("status") == "completed":
+                path = str(args.get("path") or result.get("path") or "")
+                if path:
+                    changes.append(f"{tool_name}: {path}")
+    change_lines = "\n".join(f"    - {c}" for c in changes[:15]) if changes else "    - 直接の変更はなし"
+    status_text = "成功" if status == "completed" else "未完了"
+
+    return (
+        f"{now} heavy_task {status_text}\n"
+        f"    指示: {instruction[:200]}\n"
+        f"    結果: {answer[:300]}\n"
+        f"    変更:\n{change_lines}"
+    )
+
+
+def _append_to_self_development_note(note: str) -> None:
+    """Append a line to the self-development log file."""
+    try:
+        SELF_DEVELOPMENT_NOTE.parent.mkdir(parents=True, exist_ok=True)
+        with SELF_DEVELOPMENT_NOTE.open("a", encoding="utf-8") as fh:
+            fh.write(note.strip() + "\n")
+    except Exception as error:
+        logger.debug("Failed to write self-development note: %s", error)
+
+
 def _audit_tool(tool_name: str, request_payload: JsonDict, response_payload: JsonDict) -> None:
     audit_logger = get_audit_logger()
     audit_logger.log_tool_call(
@@ -673,5 +758,73 @@ def _audit_tool(tool_name: str, request_payload: JsonDict, response_payload: Jso
         response_payload=response_payload,
         error=response_payload.get("error"),
     )
+
+
+# ── Restart signal ──────────────────────────────────────────────
+
+RESTART_SIGNAL_FILE = RUNTIME_DIR / "restart.signal"
+
+
+def signal_restart(reason: str = "") -> None:
+    """Write a restart signal so the process wrapper can restart the app."""
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    signal = {
+        "pid": os.getpid(),
+        "reason": reason.strip() or "unspecified",
+        "timestamp": isoformat_local(),
+    }
+    RESTART_SIGNAL_FILE.write_text(
+        json.dumps(signal, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    logger.info("Restart signal written: %s", signal)
+
+
+def check_restart_signal() -> JsonDict | None:
+    """Check if a restart signal exists and return it, clearing the file."""
+    if not RESTART_SIGNAL_FILE.exists():
+        return None
+    try:
+        data = json.loads(RESTART_SIGNAL_FILE.read_text(encoding="utf-8", errors="replace"))
+        RESTART_SIGNAL_FILE.unlink(missing_ok=True)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        RESTART_SIGNAL_FILE.unlink(missing_ok=True)
+    return None
+
+
+def perform_restart(target_script: str | None = None) -> None:
+    """Spawn a new process and exit the current one.
+
+    On Windows, uses subprocess.Popen since os.execv is unavailable.
+    The new process is started detached so it survives the parent exit.
+    """
+    import subprocess
+    import sys as _sys
+
+    signal_data = check_restart_signal()
+    reason = (signal_data or {}).get("reason", "unknown") if signal_data else "manual"
+    logger.info("Performing restart (reason=%s, script=%s)", reason, target_script or _sys.argv[0])
+
+    # Build command: use the same Python executable and script
+    script = target_script or _sys.argv[0]
+    executable = _sys.executable
+    args = [executable, script] + _sys.argv[1:]
+
+    try:
+        # Start new process
+        subprocess.Popen(
+            args,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP") else 0,
+            close_fds=True,
+        )
+        logger.info("New process spawned: %s", args)
+    except Exception as error:
+        logger.error("Failed to spawn restart process: %s", error, exc_info=True)
+        raise
+
+    # Exit current process
+    _sys.exit(0)
 
 

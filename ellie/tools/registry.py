@@ -583,6 +583,179 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
         },
     ),
     ToolDefinition(
+        name="self_restart",
+        description=(
+            "Local system tool. Gracefully restart the entire Ellie process (daemon or web server). "
+            "Use this after installing updates, applying self-modifications, or when the system "
+            "needs to reload configuration. The process will exit and restart automatically."
+        ),
+        tags=["system", "restart", "self", "管理", "再起動", "更新"],
+        examples=[
+            "設定を変更したのでEllieを再起動する",
+            "self_developmentでファイルを変更したので再起動が必要",
+            '{"reason":"self_developmentで設定を更新したため"}',
+        ],
+        handler_name="self_restart",
+        parameters={
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "Why the restart is needed."},
+            },
+            "required": ["reason"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="agent_read_file",
+        description=(
+            "Agent tool. Read the contents of a file with optional line range. "
+            "Use this to inspect code, configuration, or text files during development. "
+            "Specify start_line and end_line (1-indexed) to read a range, or omit to read the whole file."
+        ),
+        tags=["agent", "file", "read", "inspect", "code", "開発", "ファイル", "読み取り"],
+        examples=[
+            "ellie/core/agent.py のクラス定義を読む",
+            '{"path":"ellie/core/agent.py","start_line":1,"end_line":50}',
+            '{"path":"ellie/config.py"}',
+        ],
+        handler_name="agent_read_file",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative or absolute path to the file."},
+                "start_line": {"type": "integer", "description": "1-indexed start line (optional)."},
+                "end_line": {"type": "integer", "description": "1-indexed end line, inclusive (optional)."},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="agent_grep_search",
+        description=(
+            "Agent tool. Search for a text pattern across files in the project. "
+            "Use this to find function definitions, variable references, imports, or any text pattern. "
+            "Supports plain text and regex patterns. Results include file paths and line numbers."
+        ),
+        tags=["agent", "search", "grep", "find", "code", "開発", "検索", "コード検索"],
+        examples=[
+            "self_development が使われている箇所を探す",
+            '{"pattern":"def _handle_","include_pattern":"*.py","max_results":20}',
+            '{"pattern":"class ToolDefinition","is_regexp":false}',
+        ],
+        handler_name="agent_grep_search",
+        parameters={
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Text pattern or regex to search for."},
+                "include_pattern": {"type": "string", "description": "Glob pattern to filter files (e.g. '*.py', 'src/**/*.ts')."},
+                "is_regexp": {"type": "boolean", "description": "Whether the pattern is a regex (default: false)."},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
+            },
+            "required": ["pattern"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="agent_file_search",
+        description=(
+            "Agent tool. Search for files by glob pattern in the project. "
+            "Use this to find files by name pattern, extension, or path. "
+            "Returns matching file paths with size and modification info."
+        ),
+        tags=["agent", "file", "search", "glob", "find", "開発", "ファイル検索"],
+        examples=[
+            "Pythonファイルを全部探す",
+            '{"pattern":"ellie/**/*.py","max_results":50}',
+            '{"pattern":"**/test_*.py"}',
+        ],
+        handler_name="agent_file_search",
+        parameters={
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern to search for files."},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+            },
+            "required": ["pattern"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="agent_replace_string",
+        description=(
+            "Agent tool. Replace an exact string in an existing file. "
+            "Use this for targeted code edits (e.g., changing a function body, updating imports). "
+            "Include enough context (3-5 lines before and after) in old_string to uniquely identify the target. "
+            "The replacement MUST be the exact literal text. The file is automatically backed up before editing."
+        ),
+        tags=["agent", "edit", "replace", "modify", "code", "開発", "編集", "置換"],
+        examples=[
+            "関数名をリネームする",
+            '{"path":"ellie/core/agent.py","old_string":"def old_name(self):\\n    pass","new_string":"def new_name(self):\\n    return True"}',
+        ],
+        handler_name="agent_replace_string",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative path to the file to edit."},
+                "old_string": {"type": "string", "description": "The exact literal text to replace (include surrounding context for uniqueness)."},
+                "new_string": {"type": "string", "description": "The exact literal replacement text."},
+            },
+            "required": ["path", "old_string", "new_string"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="agent_insert_text",
+        description=(
+            "Agent tool. Insert text at a specific line number in an existing file. "
+            "Use this to add new imports, methods, or blocks at a precise location. "
+            "Line 0 inserts at the beginning of the file."
+        ),
+        tags=["agent", "edit", "insert", "modify", "code", "開発", "編集", "挿入"],
+        examples=[
+            "ファイルの先頭にimportを追加する",
+            '{"path":"ellie/core/agent.py","insert_line":0,"text":"import os\\nimport sys"}',
+            '{"path":"ellie/tools/registry.py","insert_line":42,"text":"    # new tool\\n    ToolDefinition(..."}',
+        ],
+        handler_name="agent_insert_text",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative path to the file to edit."},
+                "insert_line": {"type": "integer", "description": "0-based line number to insert at (0 = beginning of file)."},
+                "text": {"type": "string", "description": "The text to insert."},
+            },
+            "required": ["path", "insert_line", "text"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="agent_create_file",
+        description=(
+            "Agent tool. Create a new file with the specified content. "
+            "The directory will be created if it does not exist. "
+            "Use this for adding new modules, configs, or any new file to the project. "
+            "The file will be validated (py_compile for .py files) after creation."
+        ),
+        tags=["agent", "file", "create", "new", "code", "開発", "ファイル作成"],
+        examples=[
+            "新しいテストファイルを作成する",
+            '{"path":"tests/test_new_feature.py","content":"def test_it():\\n    assert True"}',
+            '{"path":"ellie/tools/new_tool.py","content":"from __future__ import annotations\\n\\n..."}',
+        ],
+        handler_name="agent_create_file",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative path for the new file."},
+                "content": {"type": "string", "description": "The full content of the new file."},
+            },
+            "required": ["path", "content"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
         name="send_notification",
         description="Local skeleton. Send a short notification to the user when the event needs attention.",
         tags=["notify", "notification", "alert", "通知", "知らせる", "アラート"],

@@ -49,6 +49,13 @@ def main():
     logger.info(f"Starting {AGENT_NAME} Autonomous AI Agent")
     logger.info("Using hybrid LLM routing: Cerebras for light tasks, DeepSeek for heavy tasks")
     
+    # Check for pending restart signal from a previous run
+    try:
+        from ellie.autonomy.runtime import check_restart_signal
+        check_restart_signal()
+    except Exception:
+        pass
+    
     # Initialize scheduler
     scheduler = AutonomousAgentScheduler()
     
@@ -62,8 +69,23 @@ def main():
         logger.info("Scheduler started successfully")
         
         # Keep the daemon running (cross-platform)
+        # Periodically check for restart signal
+        tick = 0
         while True:
-            time.sleep(1)  # Sleep briefly to avoid busy-waiting
+            time.sleep(1)
+            tick += 1
+            if tick >= 15:  # Check every ~15 seconds
+                tick = 0
+                try:
+                    from ellie.autonomy.runtime import check_restart_signal, perform_restart
+                    signal_data = check_restart_signal()
+                    if signal_data:
+                        logger.info("Restart signal detected: %s", signal_data.get("reason", ""))
+                        if scheduler:
+                            scheduler.stop()
+                        perform_restart()
+                except Exception:
+                    pass
             
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt")

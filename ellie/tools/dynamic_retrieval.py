@@ -44,6 +44,12 @@ MANDATORY_CORE_TOOL_NAMES = (
     "execute_shell",
     "overlay_show",
     "request_user_approval",
+    "agent_read_file",
+    "agent_grep_search",
+    "agent_file_search",
+    "agent_replace_string",
+    "agent_insert_text",
+    "agent_create_file",
 )
 
 
@@ -218,6 +224,13 @@ class ToolCallHandler:
             "update_long_term_goal": self._handle_update_long_term_goal,
             "send_notification": self._handle_send_notification,
             "record_user_event": self._handle_record_user_event,
+            "self_restart": self._handle_self_restart,
+            "agent_read_file": self._handle_agent_read_file,
+            "agent_grep_search": self._handle_agent_grep_search,
+            "agent_file_search": self._handle_agent_file_search,
+            "agent_replace_string": self._handle_agent_replace_string,
+            "agent_insert_text": self._handle_agent_insert_text,
+            "agent_create_file": self._handle_agent_create_file,
         }
 
         connected_pc_tool_names = set(get_connected_pc_tool_names())
@@ -513,6 +526,51 @@ class ToolCallHandler:
             "event_type": arguments.get("event_type", ""),
             "summary": arguments.get("summary", ""),
         }
+
+    def _handle_self_restart(self, arguments: JsonDict) -> JsonDict:
+        """Trigger graceful restart by writing a restart signal file."""
+        reason = str(arguments.get("reason", "")).strip() or "No reason given"
+        logger.info("Self-restart triggered: %s", reason)
+        try:
+            from ellie.autonomy.runtime import signal_restart
+            signal_restart(reason=reason)
+            return {
+                "status": "completed",
+                "tool": "self_restart",
+                "reason": reason,
+                "message": "再起動シグナルを送りました。プロセスは安全に終了し再起動します。",
+            }
+        except Exception as error:
+            logger.error("Self-restart failed: %s", error, exc_info=True)
+            return {
+                "status": "failed",
+                "tool": "self_restart",
+                "error": str(error),
+            }
+
+    def _handle_agent_read_file(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.autonomous_tools import agent_read_file
+        return agent_read_file(arguments)
+
+    def _handle_agent_grep_search(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.autonomous_tools import agent_grep_search
+        return agent_grep_search(arguments)
+
+    def _handle_agent_file_search(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.autonomous_tools import agent_file_search
+        return agent_file_search(arguments)
+
+    def _handle_agent_replace_string(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.autonomous_tools import agent_replace_string
+        return agent_replace_string(arguments)
+
+    def _handle_agent_insert_text(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.autonomous_tools import agent_insert_text
+        return agent_insert_text(arguments)
+
+    def _handle_agent_create_file(self, arguments: JsonDict) -> JsonDict:
+        from ellie.tools.autonomous_tools import agent_create_file
+        return agent_create_file(arguments)
 
 
 class DynamicToolRAGController:

@@ -69,7 +69,7 @@ except Exception:  # pragma: no cover - optional dependency fallback
             for key, value in data.items():
                 setattr(self, key, value)
 
-from ellie.autonomy.runtime import AutonomyRuntime, get_autonomy_status
+from ellie.autonomy.runtime import AutonomyRuntime, get_autonomy_status, check_restart_signal, perform_restart
 from ellie.core.instruction_runner import InstructionRunner
 from ellie.logging.logging_utils import configure_utf8_stdio
 from ellie.memory.memory import MemoryManager
@@ -127,6 +127,11 @@ class ChatRequest(BaseModel):
 @app.on_event("startup")
 def _startup() -> None:
     global _STARTUP_BRIDGE_ERROR, _AUTONOMY_RUNTIME
+    # Check if this is a restart — clear stale signal
+    try:
+        check_restart_signal()
+    except Exception:
+        pass
     try:
         start_pc_tool_bridge_server()
         _STARTUP_BRIDGE_ERROR = None
@@ -135,6 +140,27 @@ def _startup() -> None:
         logger.warning("PC tool bridge could not be started for web dashboard: %s", error)
     _AUTONOMY_RUNTIME = AutonomyRuntime(lambda: _get_runner().agent)
     _AUTONOMY_RUNTIME.start()
+
+    # Background thread to monitor restart signals
+    def _monitor_restart() -> None:
+        import time as _time
+        while True:
+            _time.sleep(15)
+            try:
+                from ellie.autonomy.runtime import check_restart_signal, perform_restart
+                signal_data = check_restart_signal()
+                if signal_data:
+                    logger.info("Web server restart signal detected: %s", signal_data.get("reason", ""))
+                    if _AUTONOMY_RUNTIME:
+                        _AUTONOMY_RUNTIME.stop()
+                    perform_restart()
+            except SystemExit:
+                raise
+            except Exception:
+                pass
+
+    import threading as _threading
+    _threading.Thread(target=_monitor_restart, daemon=True, name="restart-monitor").start()
 
 
 @app.on_event("shutdown")
@@ -175,6 +201,23 @@ def api_chat(request: Request, payload: ChatRequest) -> JsonDict:
     with _CHAT_LOCK:
         runner = _get_runner()
         return runner.chat(message)
+
+
+@app.post("/api/restart")
+def api_restart(request: Request) -> JsonDict:
+    """Gracefully restart the web server process."""
+    _ensure_local_request(request)
+    import threading as _threading
+
+    logger.info("Restart requested via API")
+
+    def _delayed_restart() -> None:
+        import time as _time
+        _time.sleep(0.5)  # Give the HTTP response time to be sent
+        perform_restart()
+
+    _threading.Thread(target=_delayed_restart, daemon=True).start()
+    return {"status": "restarting", "message": "サーバーを再起動しています…"}
 
 
 def build_state_snapshot() -> JsonDict:
@@ -642,7 +685,10 @@ INDEX_HTML = r"""<!doctype html>
       <h1>Ellie Dashboard</h1>
       <div class="subtitle">読み取り専用の状態ビュー + ローカルAIチャット</div>
     </div>
-    <button id="refresh">状態を更新</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button id="refresh">状態を更新</button>
+      <button id="restartBtn" style="background:var(--bad);color:#fff">再起動</button>
+    </div>
   </header>
   <main>
     <section class="chat">
@@ -707,10 +753,32 @@ INDEX_HTML = r"""<!doctype html>
     const el = (id) => document.getElementById(id);
     const stringify = (value) => typeof value === "string" ? value : JSON.stringify(value, null, 2);
     const setPre = (id, value) => { el(id).textContent = stringify(value ?? ""); };
-    const addBubble = (kind, text, meta = "") => {
+    const escapeHtml = (text) => String(text).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;" }[char]));
+
+    const addBubble = (kind, text, meta = "", extra = null) => {
       const bubble = document.createElement("div");
       bubble.className = `bubble ${kind}`;
-      bubble.textContent = text;
+      // Main text content
+      const textDiv = document.createElement("div");
+      textDiv.textContent = text;
+      bubble.appendChild(textDiv);
+      // Extra details (full response data)
+      if (extra) {
+        const toggle = document.createElement("button");
+        toggle.textContent = "詳細を表示";
+        toggle.style.cssText = "background:none;border:1px solid var(--border);color:var(--accent);border-radius:8px;padding:6px 10px;margin-top:8px;font-size:12px;cursor:pointer;";
+        const detailPre = document.createElement("pre");
+        detailPre.style.cssText = "display:none;margin-top:8px;max-height:600px;font-size:11px;";
+        detailPre.textContent = stringify(extra);
+        toggle.addEventListener("click", () => {
+          const hidden = detailPre.style.display === "none";
+          detailPre.style.display = hidden ? "block" : "none";
+          toggle.textContent = hidden ? "詳細を隠す" : "詳細を表示";
+        });
+        bubble.appendChild(toggle);
+        bubble.appendChild(detailPre);
+      }
+      // Meta line
       if (meta) {
         const metaLine = document.createElement("div");
         metaLine.className = "meta";
@@ -765,16 +833,6 @@ INDEX_HTML = r"""<!doctype html>
       renderAuditLog(auditData);
     }
 
-    function escapeHtml(text) {
-      return String(text).replace(/[&<>"']/g, (char) => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        "\"": "&quot;",
-        "'": "&#039;"
-      }[char]));
-    }
-
     function renderAuditLog(auditData) {
       const entries = auditData.entries || [];
       const meta = [];
@@ -811,6 +869,33 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     el("refresh").addEventListener("click", () => refreshState().catch((error) => addBubble("ai", `状態更新エラー: ${error.message}`)));
+    el("restartBtn").addEventListener("click", async () => {
+      if (!confirm("Ellieを再起動しますか？チャット中のリクエストは中断されます。")) return;
+      el("restartBtn").disabled = true;
+      el("restartBtn").textContent = "再起動中…";
+      try {
+        const response = await fetch("/api/restart", { method: "POST" });
+        const data = await response.json();
+        addBubble("ai", data.message || "再起動しています…", data.status);
+        // Poll for reconnection
+        const poll = setInterval(async () => {
+          try {
+            const res = await fetch("/api/state");
+            if (res.ok) {
+              clearInterval(poll);
+              addBubble("ai", "サーバーが再起動しました。");
+              el("restartBtn").disabled = false;
+              el("restartBtn").textContent = "再起動";
+              await refreshState();
+            }
+          } catch (_) { /* server still restarting */ }
+        }, 2000);
+      } catch (error) {
+        addBubble("ai", `再起動エラー: ${error.message}`);
+        el("restartBtn").disabled = false;
+        el("restartBtn").textContent = "再起動";
+      }
+    });
     el("chatForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const message = el("message").value.trim();
@@ -829,7 +914,11 @@ INDEX_HTML = r"""<!doctype html>
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || JSON.stringify(data));
         const elapsed = Math.round(performance.now() - started);
-        addBubble("ai", data.answer || data.error || data.status || "", `${data.status || "unknown"} / ${data.duration_ms ?? elapsed}ms / trace ${data.trace_id || "-"}`);
+        // Build a clean copy without the answer text (shown separately)
+        const extra = { ...data };
+        delete extra.answer;
+        delete extra.instruction;
+        addBubble("ai", data.answer || data.error || data.status || "", `${data.status || "unknown"} / ${data.duration_ms ?? elapsed}ms / trace ${data.trace_id || "-"}`, extra);
         await refreshState();
       } catch (error) {
         addBubble("ai", `チャットエラー: ${error.message}`);

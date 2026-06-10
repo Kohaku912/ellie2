@@ -350,22 +350,38 @@ class ReActAgent:
                     duration_ms = int((time.time() - start_time) * 1000)
                     result["duration_ms"] = duration_ms
                     summary_text = result.get("answer") or result.get("summary") or instruction_text
+
+                    # Use the concise change_summary (saved to self-development note) instead of raw tool results
+                    change_summary = result.get("change_summary") or ""
+                    tool_context_for_memory = (
+                        change_summary
+                        or f"変更ファイル: {', '.join(result.get('modified_paths', [])[:10])}"
+                        or self._safe_json(result.get("tool_results", [])[-5:])
+                    )
                     memory_note = self.generate_memory_note(
                         event_title="instruction_call",
                         event_summary=summary_text,
                         instruction_text=instruction_text,
                         answer_text=result.get("answer"),
-                        tool_context=self._safe_json(result.get("tool_results", [])),
+                        tool_context=tool_context_for_memory,
                         audit_trace_id=trace_id,
                         audit_parent_id=result.get("audit_call_id"),
                     )
                     if memory_note.strip() and memory_note.strip().upper() != "NONE":
                         self.memory.add_insight(memory_note)
+
+                    # Also store modified paths as a separate lightweight insight
+                    modified_paths = result.get("modified_paths", [])
+                    if modified_paths:
+                        path_note = f"前回の開発で編集したファイル: {', '.join(modified_paths[:8])}"
+                        if self.memory.should_store_memory_note(path_note):
+                            self.memory.add_insight(path_note)
+
                     self._reflect_self_after_event(
                         event_type="instruction_call",
                         event_text=instruction_text,
                         ai_answer=result.get("answer"),
-                        tool_summary=self._safe_json(result),
+                        tool_summary=change_summary or self._safe_json(result),
                         audit_trace_id=trace_id,
                         audit_parent_id=result.get("audit_call_id"),
                     )

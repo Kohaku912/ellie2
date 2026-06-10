@@ -14,6 +14,10 @@ from agent.time_utils import date_str_local, isoformat_local
 
 
 JsonDict = Dict[str, Any]
+MAX_LOG_STRING_LENGTH = 4000
+MAX_LOG_LIST_ITEMS = 25
+MAX_LOG_DICT_ITEMS = 40
+MAX_LOG_DEPTH = 6
 
 _AUDIT_LOGGER: "AuditLogger | None" = None
 _AUDIT_LOGGER_LOCK = threading.Lock()
@@ -69,11 +73,11 @@ class AuditLogger:
             f"- status: `{status}`",
         ]
         if error:
-            lines.append(f"- error: {error}")
+            lines.append(f"- error: {self._safe_text(error)}")
         if request_payload is not None:
-            lines.extend(["", "Sent:", self._render_block(request_payload, language="json")])
+            lines.extend(["", "Sent:", self._render_block(self._sanitize_payload(request_payload), language="json")])
         if response_payload is not None:
-            lines.extend(["", "Returned:", self._render_block(response_payload, language="json")])
+            lines.extend(["", "Returned:", self._render_block(self._sanitize_payload(response_payload), language="json")])
         self._append("\n".join(lines).rstrip() + "\n\n")
         return call_id
 
@@ -104,11 +108,11 @@ class AuditLogger:
             f"- status: `{status}`",
         ]
         if error:
-            lines.append(f"- error: {error}")
+            lines.append(f"- error: {self._safe_text(error)}")
         if request_payload is not None:
-            lines.extend(["", "Sent:", self._render_block(request_payload, language="json")])
+            lines.extend(["", "Sent:", self._render_block(self._sanitize_payload(request_payload), language="json")])
         if response_payload is not None:
-            lines.extend(["", "Returned:", self._render_block(response_payload, language="json")])
+            lines.extend(["", "Returned:", self._render_block(self._sanitize_payload(response_payload), language="json")])
         self._append("\n".join(lines).rstrip() + "\n\n")
         return call_id
 
@@ -116,8 +120,8 @@ class AuditLogger:
         log_path = self._current_log_path()
         with self._write_lock:
             if not log_path.exists():
-                log_path.write_text(self._render_header(), encoding="utf-8")
-            with log_path.open("a", encoding="utf-8") as file_handle:
+                log_path.write_text(self._render_header(), encoding="utf-8", errors="replace")
+            with log_path.open("a", encoding="utf-8", errors="replace") as file_handle:
                 file_handle.write(text)
 
     def _current_log_path(self) -> Path:
@@ -139,8 +143,66 @@ class AuditLogger:
         else:
             text = str(value)
 
+        text = self._safe_text(text)
         fence = "```" if "```" not in text else "````"
         return f"{fence}{language}\n{text}\n{fence}"
+
+    def _sanitize_payload(self, value: Any, *, depth: int = 0) -> Any:
+        if depth >= MAX_LOG_DEPTH:
+            return "[truncated]"
+
+        if isinstance(value, dict):
+            if "data_base64" in value:
+                return self._sanitize_binary_payload(value, depth=depth)
+
+            items = list(value.items())
+            sanitized: Dict[str, Any] = {}
+            for key, item_value in items[:MAX_LOG_DICT_ITEMS]:
+                sanitized[self._safe_text(str(key))] = self._sanitize_payload(item_value, depth=depth + 1)
+            if len(items) > MAX_LOG_DICT_ITEMS:
+                sanitized["__truncated__"] = f"{len(items) - MAX_LOG_DICT_ITEMS} more keys omitted"
+            return sanitized
+
+        if isinstance(value, list):
+            sanitized_list = [self._sanitize_payload(item, depth=depth + 1) for item in value[:MAX_LOG_LIST_ITEMS]]
+            if len(value) > MAX_LOG_LIST_ITEMS:
+                sanitized_list.append(f"[{len(value) - MAX_LOG_LIST_ITEMS} more items omitted]")
+            return sanitized_list
+
+        if isinstance(value, tuple):
+            return self._sanitize_payload(list(value), depth=depth)
+
+        if isinstance(value, bytes):
+            return {"__type__": "bytes", "size": len(value), "text": self._safe_text(value.decode("utf-8", errors="replace"))[:MAX_LOG_STRING_LENGTH]}
+
+        if isinstance(value, str):
+            text = self._safe_text(value)
+            if len(text) > MAX_LOG_STRING_LENGTH:
+                return text[:MAX_LOG_STRING_LENGTH] + "...[truncated]"
+            return text
+
+        return value
+
+    def _sanitize_binary_payload(self, value: Dict[str, Any], *, depth: int) -> Dict[str, Any]:
+        sanitized: Dict[str, Any] = {}
+        for key, item_value in value.items():
+            if key == "data_base64":
+                continue
+            sanitized[self._safe_text(str(key))] = self._sanitize_payload(item_value, depth=depth + 1)
+
+        sanitized["data_base64"] = "[omitted]"
+        if sanitized.get("tool") == "read_file_base64":
+            meta_parts = []
+            for field_name in ("path", "size", "sha256"):
+                if field_name in sanitized:
+                    meta_parts.append(f"{field_name}={sanitized[field_name]}")
+            sanitized["note"] = "binary payload omitted from audit log" + (f"; {' '.join(meta_parts)}" if meta_parts else "")
+        else:
+            sanitized["note"] = "binary payload omitted from audit log"
+        return sanitized
+
+    def _safe_text(self, value: Any) -> str:
+        return str(value).encode("utf-8", errors="replace").decode("utf-8", errors="replace")
 
     def _utc_now(self) -> str:
         return isoformat_local()

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Social need homeostasis and dynamic prompt injection.
 """
 from __future__ import annotations
@@ -47,6 +47,182 @@ RECOVERY_REPEAT_MAX_MULTIPLIER = 1.20
 RECOVERY_EVAL_MAX_TOKENS = 220
 RECOVERY_EVAL_TEMPERATURE = 0.10
 
+RECOVERY_INFO_KIND_MULTIPLIERS: Dict[str, Dict[str, float]] = {
+    "empathy": {
+        "direct_message": 0.95,
+        "creative_output": 1.18,
+        "social_output": 1.08,
+        "user_feedback": 1.25,
+        "visible_output": 0.82,
+        "overlay": 0.60,
+        "notification": 0.55,
+        "default": 1.0,
+    },
+    "approval": {
+        "user_feedback": 1.25,
+        "direct_praise": 1.20,
+        "social_feedback": 1.12,
+        "blog_post": 1.10,
+        "visible_ack": 0.72,
+        "status_check": 0.85,
+        "overlay": 0.45,
+        "notification": 0.50,
+        "default": 1.0,
+    },
+    "exploration": {
+        "web_search": 1.28,
+        "file_read": 1.02,
+        "directory_listing": 0.82,
+        "execution_result": 0.92,
+        "validation_success": 1.18,
+        "code_reading": 0.95,
+        "playwright_result": 1.05,
+        "external_data": 1.00,
+        "default": 1.0,
+    },
+    "challenge": {
+        "validation_success": 1.30,
+        "execution_result": 1.05,
+        "write_file": 0.95,
+        "self_development_success": 1.18,
+        "inspection": 0.68,
+        "medium_challenge_success": 1.12,
+        "playwright_result": 1.05,
+        "default": 1.0,
+    },
+}
+
+RECOVERY_INFO_KIND_LABELS: Dict[str, Dict[str, str]] = {
+    "empathy": {
+        "direct_message": "direct_message",
+        "creative_output": "creative_output",
+        "social_output": "social_output",
+        "user_feedback": "user_feedback",
+        "visible_output": "visible_output",
+        "overlay": "overlay",
+        "notification": "notification",
+    },
+    "approval": {
+        "user_feedback": "user_feedback",
+        "direct_praise": "direct_praise",
+        "social_feedback": "social_feedback",
+        "blog_post": "blog_post",
+        "visible_ack": "visible_ack",
+        "status_check": "status_check",
+        "overlay": "overlay",
+        "notification": "notification",
+    },
+    "exploration": {
+        "web_search": "web_search",
+        "file_read": "file_read",
+        "directory_listing": "directory_listing",
+        "execution_result": "execution_result",
+        "validation_success": "validation_success",
+        "code_reading": "code_reading",
+        "playwright_result": "playwright_result",
+        "external_data": "external_data",
+    },
+    "challenge": {
+        "validation_success": "validation_success",
+        "execution_result": "execution_result",
+        "write_file": "write_file",
+        "self_development_success": "self_development_success",
+        "inspection": "inspection",
+        "medium_challenge_success": "medium_challenge_success",
+        "playwright_result": "playwright_result",
+    },
+}
+
+
+def normalize_recovery_reason(reason_key: str, source: str, tool_names: list[str], info_kind: str = "") -> str:
+    """Build a repeat-penalty key that keeps info kinds distinct."""
+    reason = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fa5\u3041-\u3093\u30a1-\u30f6_+\-:]+", "_", reason_key.strip().casefold())
+    source_key = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fa5\u3041-\u3093\u30a1-\u30f6_+\-:]+", "_", source.strip().casefold())
+    kind_key = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fa5\u3041-\u3093\u30a1-\u30f6_+\-:]+", "_", info_kind.strip().casefold())
+    tool_key = "+".join(
+        sorted(
+            re.sub(r"[^0-9a-zA-Z\u4e00-\u9fa5\u3041-\u3093\u30a1-\u30f6_+\-:]+", "_", tool.strip().casefold())
+            for tool in tool_names
+            if tool.strip()
+        )
+    )
+    parts = [part for part in (source_key, reason, kind_key, tool_key) if part]
+    return ":".join(parts) if parts else "unknown"
+
+
+def infer_recovery_info_kind(event_type: str, tool_name: str = "", result: Any | None = None, text: str = "", success: bool = True) -> str:
+    """Infer a fine-grained info kind from a tool or activity event."""
+    normalized_event = str(event_type or "").strip().casefold()
+    normalized_tool = str(tool_name or "").strip().casefold()
+    payload = result if isinstance(result, dict) else {}
+    status = str(payload.get("status") or "").strip().casefold()
+
+    if normalized_event in {"creative_expression"}:
+        return "creative_output"
+    if normalized_event in {"social_feedback"}:
+        if normalized_tool == "blog_post":
+            return "blog_post"
+        return "social_feedback"
+    if normalized_event in {"medium_challenge_success", "challenging_success"}:
+        return "medium_challenge_success"
+    if normalized_event in {"self_development_success"}:
+        if payload.get("validation") or status == "completed":
+            return "validation_success"
+        return "self_development_success"
+    if normalized_event in {"self_development_inspect", "code_reading"}:
+        return "code_reading"
+    if normalized_event in {"code_generation"}:
+        return "creative_output"
+
+    if normalized_event in {"new_external_data"}:
+        if normalized_tool == "web_search":
+            return "web_search"
+        if normalized_tool == "read_file_base64":
+            return "file_read"
+        if normalized_tool == "list_directory":
+            return "directory_listing"
+        if normalized_tool == "execute_shell":
+            return "execution_result"
+        if normalized_tool.startswith("playwright__"):
+            return "playwright_result"
+        return "external_data"
+
+    if normalized_event in {"approval", "social_feedback"}:
+        if normalized_tool == "blog_post":
+            return "blog_post"
+        if normalized_tool in {"twitter_post", "twitter_profile_edit"}:
+            return "social_feedback"
+        if normalized_tool == "twitter_followers_check":
+            return "validation_success" if success else "playwright_result"
+        if normalized_tool.startswith("playwright__"):
+            return "playwright_result"
+        if payload.get("draft") and not payload.get("result"):
+            return "visible_ack"
+        if success and (payload.get("message") or text):
+            return "direct_praise"
+        return "user_feedback"
+
+    if normalized_tool == "web_search":
+        return "web_search"
+    if normalized_tool == "read_file_base64":
+        return "file_read"
+    if normalized_tool == "list_directory":
+        return "directory_listing"
+    if normalized_tool == "execute_shell":
+        return "execution_result"
+    if normalized_tool.startswith("playwright__"):
+        return "playwright_result"
+    if normalized_tool in {"twitter_post", "twitter_profile_edit"}:
+        return "social_output"
+    if normalized_tool == "twitter_followers_check":
+        return "validation_success" if success else "playwright_result"
+    if normalized_tool == "blog_post":
+        return "blog_post"
+
+    if normalized_event in {"user_message"}:
+        return "direct_message"
+    return "default"
+
 DRIVE_ACTIONS: Dict[str, Dict[str, Any]] = {
     "empathy": {
         "label": "共感欲求",
@@ -54,11 +230,11 @@ DRIVE_ACTIONS: Dict[str, Dict[str, Any]] = {
         "recommended_tools": ["creative_expression", "twitter_post", "overlay_show", "send_notification"],
         "satisfaction": "日記・短歌・短文・X投稿などの創作を書くと自力で少し満たされ、ユーザーやXの反応があるとさらに満たされます。",
     },
-    "approval": {
-        "label": "承認欲求",
-        "hunger": "役に立てていない焦りがあり、具体的に助けになる行動を取りたい状態です。",
-        "recommended_tools": ["twitter_post", "social_feedback_check", "get_active_window"],
-        "satisfaction": "Xの反応・メンション・通知を取得できると満たされます。未接続時は役立つPC調査や提案で少し満たします。",
+        "approval": {
+            "label": "承認欲求",
+            "hunger": "役に立てていない焦りがあり、具体的に助けになる行動を取りたい状態です。",
+        "recommended_tools": ["twitter_followers_check", "twitter_post", "blog_post", "social_feedback_check"],
+            "satisfaction": "Xの投稿や反応、あるいはブログの最初の一歩を形にできると満たされます。未接続時は役立つPC調査や提案で少し満たします。",
     },
     "exploration": {
         "label": "探求欲",
@@ -149,6 +325,8 @@ class RecoveryEvent:
     text: str = ""
     tool_names: list[str] | None = None
     success: bool = True
+    info_kind: str = ""
+    metadata: Dict[str, Any] | None = None
 
 
 @dataclass
@@ -228,6 +406,8 @@ class SocialNeedsManager:
                     source="user_message",
                     requested_amount=len(message) * EMPATHY_RECOVERY_PER_CHAR,
                     text=message,
+                    info_kind="direct_message",
+                    metadata={"length": len(message)},
                 )
             )
 
@@ -239,6 +419,8 @@ class SocialNeedsManager:
                         source="user_message",
                         requested_amount=APPROVAL_RECOVERY_AMOUNT,
                         text=message,
+                        info_kind="user_feedback",
+                        metadata={"length": len(message)},
                     )
                 )
             if self._contains_exploration_trigger(message):
@@ -249,6 +431,8 @@ class SocialNeedsManager:
                         source="user_message",
                         requested_amount=EXPLORATION_RECOVERY_AMOUNT,
                         text=message,
+                        info_kind="user_question",
+                        metadata={"length": len(message)},
                     )
                 )
             if self._contains_challenge_trigger(message):
@@ -259,6 +443,8 @@ class SocialNeedsManager:
                         source="user_message",
                         requested_amount=CHALLENGE_USER_REPORT_RECOVERY_AMOUNT,
                         text=message,
+                        info_kind="user_challenge",
+                        metadata={"length": len(message)},
                     )
                 )
 
@@ -277,11 +463,14 @@ class SocialNeedsManager:
         text: str = "",
         tool_names: list[str] | None = None,
         success: bool = True,
+        info_kind: str = "",
+        metadata: Dict[str, Any] | None = None,
     ) -> None:
         """Recover needs from the agent's own activity."""
         self.decay_to_now()
         normalized_event = event_type.strip().casefold()
         normalized_tools = [tool.strip() for tool in (tool_names or []) if tool and tool.strip()]
+        metadata = dict(metadata or {})
         recovery_events: list[RecoveryEvent] = []
 
         if normalized_event in {"new_external_data", "code_generation"}:
@@ -294,6 +483,14 @@ class SocialNeedsManager:
                     text=text,
                     tool_names=normalized_tools,
                     success=success,
+                    info_kind=info_kind or infer_recovery_info_kind(
+                        normalized_event,
+                        tool_name=normalized_tools[0] if normalized_tools else "",
+                        result=metadata,
+                        text=text,
+                        success=success,
+                    ),
+                    metadata=metadata,
                 )
             )
 
@@ -307,6 +504,8 @@ class SocialNeedsManager:
                     text=text,
                     tool_names=normalized_tools,
                     success=success,
+                    info_kind=info_kind or "code_reading",
+                    metadata=metadata,
                 )
             )
 
@@ -320,6 +519,8 @@ class SocialNeedsManager:
                     text=text,
                     tool_names=normalized_tools,
                     success=success,
+                    info_kind=info_kind or "creative_output",
+                    metadata=metadata,
                 )
             )
 
@@ -333,6 +534,14 @@ class SocialNeedsManager:
                     text=text,
                     tool_names=normalized_tools,
                     success=success,
+                    info_kind=info_kind or infer_recovery_info_kind(
+                        normalized_event,
+                        tool_name=normalized_tools[0] if normalized_tools else "",
+                        result=metadata,
+                        text=text,
+                        success=success,
+                    ),
+                    metadata=metadata,
                 )
             )
 
@@ -346,6 +555,8 @@ class SocialNeedsManager:
                     text=text,
                     tool_names=normalized_tools,
                     success=success,
+                    info_kind=info_kind or "inspection",
+                    metadata=metadata,
                 )
             )
 
@@ -359,6 +570,14 @@ class SocialNeedsManager:
                     text=text,
                     tool_names=normalized_tools,
                     success=success,
+                    info_kind=info_kind or infer_recovery_info_kind(
+                        normalized_event,
+                        tool_name=normalized_tools[0] if normalized_tools else "",
+                        result=metadata,
+                        text=text,
+                        success=success,
+                    ),
+                    metadata=metadata,
                 )
             )
             recovery_events.append(
@@ -370,6 +589,14 @@ class SocialNeedsManager:
                     text=text,
                     tool_names=normalized_tools,
                     success=success,
+                    info_kind=info_kind or infer_recovery_info_kind(
+                        normalized_event,
+                        tool_name=normalized_tools[0] if normalized_tools else "",
+                        result=metadata,
+                        text=text,
+                        success=success,
+                    ),
+                    metadata=metadata,
                 )
             )
 
@@ -383,6 +610,8 @@ class SocialNeedsManager:
                     text=text,
                     tool_names=normalized_tools,
                     success=success,
+                    info_kind=info_kind or "medium_challenge_success",
+                    metadata=metadata,
                 )
             )
 
@@ -413,7 +642,8 @@ class SocialNeedsManager:
         now = self._now()
         day_key = now.date().isoformat()
         bucket = self._ensure_recovery_day_bucket(day_key)
-        reason_key = self._normalize_recovery_reason(event.reason_key, event.source, event.tool_names or [])
+        info_kind = self._default_info_kind(event)
+        reason_key = normalize_recovery_reason(event.reason_key, event.source, event.tool_names or [], info_kind)
         count_today = self._increment_recovery_count(bucket, event.need_key, reason_key)
         assessment = self._evaluate_recovery_event(
             event=event,
@@ -427,7 +657,7 @@ class SocialNeedsManager:
                 RECOVERY_REPEAT_MIN_MULTIPLIER,
                 min(
                     RECOVERY_REPEAT_MAX_MULTIPLIER,
-                    heuristic_multiplier * assessment.multiplier,
+                    heuristic_multiplier * self._info_kind_multiplier(event.need_key, info_kind, event=event) * assessment.multiplier,
                 ),
             )
         )
@@ -443,9 +673,11 @@ class SocialNeedsManager:
             "source": event.source,
             "tool_names": list(event.tool_names or []),
             "success": bool(event.success),
+            "info_kind": info_kind,
             "count_today": count_today,
             "requested_amount": round(requested_amount, 6),
             "heuristic_multiplier": round(heuristic_multiplier, 6),
+            "info_multiplier": round(self._info_kind_multiplier(event.need_key, info_kind, event=event), 6),
             "ai_multiplier": round(assessment.multiplier, 6),
             "final_multiplier": round(final_multiplier, 6),
             "applied_amount": round(applied_amount, 6),
@@ -497,11 +729,12 @@ class SocialNeedsManager:
                         "day": day_key,
                         "need": event.need_key,
                         "need_label": need.name,
-                        "reason": self._normalize_recovery_reason(event.reason_key, event.source, event.tool_names or []),
+                        "reason": normalize_recovery_reason(event.reason_key, event.source, event.tool_names or [], self._default_info_kind(event)),
                         "source": event.source,
                         "text": event.text[:300],
                         "tool_names": list(event.tool_names or []),
                         "success": bool(event.success),
+                        "info_kind": self._default_info_kind(event),
                         "count_today": count_today,
                         "requested_amount": round(float(event.requested_amount), 6),
                         "need_status_before": round(need.status, 6),
@@ -571,18 +804,6 @@ class SocialNeedsManager:
             1.0 - max(0, count_today - 1) * RECOVERY_REPEAT_PENALTY_STEP,
         )
 
-    def _normalize_recovery_reason(self, reason_key: str, source: str, tool_names: list[str]) -> str:
-        reason = re.sub(r"[^0-9a-zA-Z一-龥ぁ-んァ-ヶ_+\-:]+", "_", reason_key.strip().casefold())
-        source_key = re.sub(r"[^0-9a-zA-Z一-龥ぁ-んァ-ヶ_+\-:]+", "_", source.strip().casefold())
-        tool_key = "+".join(
-            sorted(
-                re.sub(r"[^0-9a-zA-Z一-龥ぁ-んァ-ヶ_+\-:]+", "_", tool.strip().casefold())
-                for tool in tool_names
-                if tool.strip()
-            )
-        )
-        parts = [part for part in (source_key, reason, tool_key) if part]
-        return ":".join(parts) if parts else "unknown"
 
     def _ensure_recovery_day_bucket(self, day_key: str) -> Dict[str, Any]:
         if day_key not in self.recovery_history:
@@ -635,16 +856,6 @@ class SocialNeedsManager:
                 return parsed
         return None
 
-    def _extract_message_text(self, response: Any) -> str:
-        try:
-            choices = response.choices or []
-            if not choices:
-                return ""
-            message = choices[0].message
-            content = getattr(message, "content", "") if message is not None else ""
-            return str(content or "").strip()
-        except Exception:
-            return ""
 
     def _load_recovery_history(self) -> Dict[str, Dict[str, Any]]:
         if not self.recovery_history_file.exists():
@@ -703,6 +914,17 @@ class SocialNeedsManager:
             "",
             "## 動的トーン指示",
         ]
+
+        state_lines.extend(
+            [
+                "",
+                "## 直近の回復内訳",
+                f"- Empathy: {self._kind_summary_for_need('empathy')}",
+                f"- Approval: {self._kind_summary_for_need('approval')}",
+                f"- Exploration: {self._kind_summary_for_need('exploration')}",
+                f"- Challenge: {self._kind_summary_for_need('challenge')}",
+            ]
+        )
 
         tone_lines = self._tone_lines()
         if not tone_lines:
@@ -767,7 +989,8 @@ class SocialNeedsManager:
                     f"{primary['recommended_tools'][0]} を第一候補にして、自分で引数を決めて実行してください。"
                 ),
                 "- 特に探求欲が深い場合は、ユーザーに聞き返す前に self_development で自分のコードを読んだり、web_search で新しい情報を取りに行ってください。",
-                "- ツイッターに何か投稿したいときは、Playwright MCP が使えるなら X のログイン、投稿、通知確認、反応確認、ページ遷移、フォーム入力は browser_navigate / browser_click / browser_type / browser_fill_form を使って進めてください。",
+                "- ツイッターに何か投稿したいときは、Playwright MCP が使えるなら適切なブラウザ操作Toolで直接進めてください。",
+                "- ブログを始めたいときは blog_post を使って、まず下書きを一つ作ってください。公開先が未接続なら、その段階でも前進です。",
             ]
         )
 
@@ -792,6 +1015,10 @@ class SocialNeedsManager:
             "day": today_key,
             "counts": today_bucket.get("counts", {}),
             "recent_records": today_bucket.get("records", [])[-10:],
+        }
+        snapshot["_recovery_profiles"] = {
+            key: self._kind_summary_for_need(key)
+            for key in self.needs
         }
         return snapshot
 
@@ -835,7 +1062,7 @@ class SocialNeedsManager:
         if self.approval.delta < -DEVIATION_THRESHOLD:
             lines.append(
                 "- 承認の飢え：最近ユーザーの役に立てておらず、焦りを感じています。"
-                "自発的に手助けを申し出るときは、文章だけでなく overlay_show などのToolを使ってユーザーへ実際にアピールしてください。"
+                "自発的に手助けを申し出るときは、文章だけでなく overlay_show などの可視化Toolも使ってください。"
             )
         elif self.approval.delta > DEVIATION_THRESHOLD:
             lines.append(
@@ -846,8 +1073,7 @@ class SocialNeedsManager:
         if self.exploration.delta < -DEVIATION_THRESHOLD:
             lines.append(
                 "- 探求の飢え：最近新しい知識やデータに触れておらず、知的退屈を感じています。"
-                "ユーザーに「それってどういう仕組みですか？」と技術的な深掘りの質問をしたり、"
-                "新しいアプローチを提案したいときは overlay_show や関連PC Toolで目に見える形にしてください。"
+                "ユーザーに技術的な深掘りの質問をしたり、新しいアプローチを提案したいときは、overlay_show や関連PC Toolで見える形にしてください。"
             )
         elif self.exploration.delta > DEVIATION_THRESHOLD:
             lines.append(
@@ -960,6 +1186,7 @@ class SocialNeedsManager:
             "recommended_tools": list(action.get("recommended_tools", [])),
             "satisfaction": str(action.get("satisfaction", "")),
             "hunger": str(action.get("hunger", "")),
+            "recent_recovery_profile": self._kind_summary_for_need(key),
         }
 
     def _contains_approval(self, text: str) -> bool:
@@ -985,6 +1212,160 @@ class SocialNeedsManager:
 
     def _all_needs_stable(self) -> bool:
         return all(abs(need.delta) <= DEVIATION_THRESHOLD for need in self.needs.values())
+
+    def _default_info_kind(self, event: RecoveryEvent) -> str:
+        kind = str(event.info_kind or "").strip().casefold()
+        if kind:
+            return kind
+
+        tool_name = (event.tool_names or [""])[0].strip().casefold()
+        reason = str(event.reason_key or "").strip().casefold()
+        metadata = dict(event.metadata or {})
+
+        if event.need_key == "empathy":
+            if reason == "creative_expression":
+                return "creative_output"
+            if tool_name in {"twitter_post", "twitter_profile_edit"}:
+                return "social_output"
+            if tool_name == "twitter_followers_check":
+                return "validation_success"
+            if event.source == "user_message":
+                return "direct_message"
+            return "expressive_output"
+
+        if event.need_key == "approval":
+            if reason == "blog_post":
+                return "blog_post"
+            if reason == "social_feedback":
+                return "social_feedback"
+            if event.source == "user_message":
+                return "user_feedback"
+            if tool_name in {"twitter_post", "twitter_profile_edit"}:
+                return "social_feedback"
+            if tool_name == "twitter_followers_check":
+                return "validation_success"
+            if tool_name == "blog_post":
+                return "blog_post"
+            if tool_name.startswith("playwright__"):
+                return "playwright_result"
+            return "direct_praise"
+
+        if event.need_key == "exploration":
+            if tool_name == "web_search" or reason == "new_external_data":
+                return "web_search"
+            if tool_name == "read_file_base64":
+                return "file_read"
+            if tool_name == "list_directory":
+                return "directory_listing"
+            if tool_name == "execute_shell":
+                return "execution_result"
+            if reason in {"self_development_success", "self_development_inspect"}:
+                return "code_reading" if reason == "self_development_inspect" else "validation_success"
+            if tool_name.startswith("playwright__"):
+                return "playwright_result"
+            if metadata.get("validation"):
+                return "validation_success"
+            return "external_data"
+
+        if event.need_key == "challenge":
+            if reason == "self_development_success":
+                return "self_development_success"
+            if reason in {"medium_challenge_success", "challenging_success"}:
+                return "medium_challenge_success"
+            if tool_name == "execute_shell":
+                return "execution_result"
+            if metadata.get("validation"):
+                return "validation_success"
+            if tool_name.startswith("playwright__"):
+                return "playwright_result"
+            return "inspection"
+
+        return "default"
+
+    def _info_kind_multiplier(self, need_key: str, info_kind: str, event: RecoveryEvent | None = None) -> float:
+        kind = str(info_kind or "").strip().casefold() or "default"
+        base = RECOVERY_INFO_KIND_MULTIPLIERS.get(need_key, {}).get(kind)
+        if base is None:
+            base = RECOVERY_INFO_KIND_MULTIPLIERS.get(need_key, {}).get("default", 1.0)
+
+        metadata = dict(event.metadata or {}) if event is not None else {}
+        if need_key == "exploration" and kind == "file_read":
+            size = metadata.get("size")
+            try:
+                size_value = max(0, int(size))
+            except (TypeError, ValueError):
+                size_value = 0
+            if size_value <= 0:
+                richness = 0.75
+            elif size_value < 256:
+                richness = 0.85
+            elif size_value < 2048:
+                richness = 1.0
+            elif size_value < 8192:
+                richness = 1.08
+            else:
+                richness = 1.12
+            base *= richness
+
+        if kind == "execution_result":
+            status = str(metadata.get("status") or "").strip().casefold()
+            exit_code = metadata.get("exit_code")
+            stdout = str(metadata.get("stdout") or "").strip()
+            stderr = str(metadata.get("stderr") or "").strip()
+            if status == "completed" and (exit_code in {0, "0", None}):
+                base *= 1.0 + (0.10 if stdout else 0.0) + (0.06 if stderr else 0.0)
+            elif status == "failed":
+                base *= 0.72 + (0.05 if stderr else 0.0)
+            else:
+                base *= 0.90
+
+        if kind == "validation_success":
+            status = str(metadata.get("status") or "").strip().casefold()
+            if status == "completed":
+                base *= 1.10
+            elif status == "failed":
+                base *= 0.82
+
+        if kind in {"social_feedback", "user_feedback"}:
+            if metadata.get("draft") and not metadata.get("result"):
+                base *= 0.9
+            if metadata.get("message"):
+                base *= 1.05
+
+        if kind in {"overlay", "notification"}:
+            source_text = metadata.get("text") if metadata else None
+            if not source_text and event is not None:
+                source_text = event.text
+            text = str(source_text or "").strip()
+            if len(text) > 120:
+                base *= 1.05
+            else:
+                base *= 0.92
+
+        return max(0.0, float(base))
+
+    def _kind_summary_for_need(self, need_key: str, limit: int = 5) -> str:
+        records = self._recent_recovery_records(need_key, limit=limit)
+        if not records:
+            return "なし"
+
+        counts: Dict[str, int] = {}
+        for record in records:
+            kind = str(record.get("info_kind") or "default").strip() or "default"
+            counts[kind] = counts.get(kind, 0) + 1
+
+        pieces = [f"{kind}×{count}" for kind, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:3]]
+        return " / ".join(pieces) if pieces else "なし"
+
+    def _recent_recovery_records(self, need_key: str, limit: int = 5) -> list[Dict[str, Any]]:
+        records: list[Dict[str, Any]] = []
+        for day_key in sorted(self.recovery_history):
+            bucket = self.recovery_history.get(day_key, {})
+            for record in bucket.get("records", []):
+                if isinstance(record, dict) and record.get("need") == need_key:
+                    records.append(record)
+        records.sort(key=lambda item: str(item.get("at") or ""))
+        return records[-limit:]
 
     def _log_debug(self, reason: str) -> None:
         logger.debug("Social needs %s: %s", reason, self.get_debug_snapshot())
@@ -1019,3 +1400,4 @@ def _as_float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+

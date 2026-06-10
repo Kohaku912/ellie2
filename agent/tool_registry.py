@@ -461,6 +461,61 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
         },
     ),
     ToolDefinition(
+        name="request_user_approval",
+        description=(
+            "Local autonomous tool. Ask for quick user approval with an overlay when the answer is needed now, "
+            "or queue the request in self_development_requests.md when it can wait."
+        ),
+        tags=[
+            "approval",
+            "overlay",
+            "confirm",
+            "request",
+            "user",
+            "承認",
+            "確認",
+            "依頼",
+        ],
+        examples=[
+            "この操作を今すぐ確認したい",
+            "急がない確認依頼を残したい",
+            '{"title":"続けてよいですか","details":"次に自動実行へ進みます","immediate":true}',
+        ],
+        handler_name="request_user_approval",
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short approval request title.",
+                },
+                "details": {
+                    "type": "string",
+                    "description": "Optional extra context for the request.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why the approval request matters.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "What the request applies to.",
+                },
+                "priority": {
+                    "type": "string",
+                    "enum": ["low", "normal", "high"],
+                    "default": "normal",
+                },
+                "immediate": {
+                    "type": "boolean",
+                    "description": "Use overlay immediately when true; otherwise queue the request for later.",
+                    "default": True,
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
         name="twitter_profile_edit",
         description=(
             "Local autonomous tool. Edit the logged-in X/Twitter profile through Playwright MCP. "
@@ -539,6 +594,42 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
         },
     ),
     ToolDefinition(
+        name="twitter_followers_check",
+        description=(
+            "Local autonomous tool. Open X/Twitter through Playwright MCP and read the current account's follower count. "
+            "If the account is not logged in, it opens the login page and shows an overlay telling the user to log in."
+        ),
+        tags=[
+            "twitter",
+            "x",
+            "followers",
+            "count",
+            "profile",
+            "playwright",
+            "browser",
+            "approval",
+            "login",
+            "フォロワー",
+            "確認",
+        ],
+        examples=[
+            "自分のツイッターのフォロワー数を確認して",
+            '{"open_login_on_missing": true}',
+        ],
+        handler_name="twitter_followers_check",
+        parameters={
+            "type": "object",
+            "properties": {
+                "open_login_on_missing": {
+                    "type": "boolean",
+                    "description": "If true, show an overlay and open login when not signed in.",
+                    "default": True,
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
         name="twitter_post",
         description=(
             "Local autonomous tool. Post a short message to X/Twitter through Playwright MCP. "
@@ -578,6 +669,42 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
                     "type": "string",
                     "description": "Alternate post content field.",
                 },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="blog_post",
+        description=(
+            "Local autonomous tool. Start a short blog entry or draft for approval recovery. "
+            "Use this when Ellie wants to begin a public write-up without a remote CMS."
+        ),
+        tags=[
+            "blog",
+            "post",
+            "article",
+            "draft",
+            "write",
+            "publish",
+            "approval",
+            "public",
+            "journal",
+            "ブログ",
+            "記事",
+        ],
+        examples=[
+            "ブログを始めるために最初の下書きを書いて",
+            '{"title":"今日の気づき","body":"短い所感を一段落で書く"}',
+        ],
+        handler_name="blog_post",
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Blog entry title."},
+                "body": {"type": "string", "description": "Draft body text."},
+                "content": {"type": "string", "description": "Alternate draft body field."},
+                "category": {"type": "string", "description": "Optional category such as journal or essay."},
+                "audience": {"type": "string", "description": "Audience or publication target."},
             },
             "additionalProperties": False,
         },

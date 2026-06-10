@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional
 from cerebras.cloud.sdk import Cerebras, RateLimitError
 
 from agent.audit_log import get_audit_logger
+from agent.social_needs import infer_recovery_info_kind
+from agent.ai_activity import get_ai_activity_tracker
 from agent.autonomy_runtime import AutonomyRuntime
 from agent.dynamic_tool_rag import DynamicToolRAGController, ToolCallHandler, ToolCallRequest
 from agent.llm_router import LLMRouter
@@ -29,10 +31,12 @@ from config import (
     DEFAULT_OVERLAY_CLEAR_AFTER_MS,
     HEAVY_TASK_MAX_STEPS,
     MAX_TOKENS,
+    TOOL_CAPABILITY_INDEX,
     TEMPERATURE,
 )
 
 logger = logging.getLogger(__name__)
+AI_ACTIVITY_TRACKER = get_ai_activity_tracker()
 
 READ_LIKE_TOOL_NAMES = {
     "web_search",
@@ -187,7 +191,8 @@ class ReActAgent:
         self.temperature = TEMPERATURE
 
     def _build_system_prompt(self) -> str:
-        return self.social_needs.build_system_prompt(AGENT_SYSTEM_PROMPT)
+        base_prompt = f"{TOOL_CAPABILITY_INDEX}\n\n{AGENT_SYSTEM_PROMPT}".strip()
+        return self.social_needs.build_system_prompt(base_prompt)
 
     def _compose_ai_context(self) -> str:
         context_parts = [self.memory.get_memory_context()]
@@ -241,52 +246,53 @@ class ReActAgent:
         audit_logger = get_audit_logger()
         trace_id = audit_trace_id or audit_logger.new_id("autonomous-run")
 
-        try:
-            memory_context = self._compose_ai_context()
-            result = self._run_autonomous_tool_loop(
-                memory_context,
-                audit_trace_id=trace_id,
-                audit_parent_id=trace_id,
-            )
-            duration_ms = int((time.time() - start_time) * 1000)
-            result["duration_ms"] = duration_ms
-            self.memory.update_task_generation_count(1)
-            self._apply_tool_result_social_recovery(result.get("tool_results", []))
+        with AI_ACTIVITY_TRACKER.active("autonomous_cycle"):
+            try:
+                memory_context = self._compose_ai_context()
+                result = self._run_autonomous_tool_loop(
+                    memory_context,
+                    audit_trace_id=trace_id,
+                    audit_parent_id=trace_id,
+                )
+                duration_ms = int((time.time() - start_time) * 1000)
+                result["duration_ms"] = duration_ms
+                self.memory.update_task_generation_count(1)
+                self._apply_tool_result_social_recovery(result.get("tool_results", []))
 
-            summary_text = result.get("answer") or result.get("reflect") or result.get("status") or "自律実行を完了した。"
-            tool_summary = self._safe_json(result.get("tool_results", []))
-            memory_note = self.generate_memory_note(
-                event_title="autonomous_cycle",
-                event_summary=summary_text,
-                answer_text=result.get("answer"),
-                tool_context=tool_summary,
-                audit_trace_id=trace_id,
-                audit_parent_id=result.get("audit_call_id"),
-            )
-            if memory_note.strip() and memory_note.strip().upper() != "NONE":
-                self.memory.add_insight(memory_note)
+                summary_text = result.get("answer") or result.get("reflect") or result.get("status") or "自律実行を完了した。"
+                tool_summary = self._safe_json(result.get("tool_results", []))
+                memory_note = self.generate_memory_note(
+                    event_title="autonomous_cycle",
+                    event_summary=summary_text,
+                    answer_text=result.get("answer"),
+                    tool_context=tool_summary,
+                    audit_trace_id=trace_id,
+                    audit_parent_id=result.get("audit_call_id"),
+                )
+                if memory_note.strip() and memory_note.strip().upper() != "NONE":
+                    self.memory.add_insight(memory_note)
 
-            self._reflect_self_after_event(
-                event_type="autonomous_cycle",
-                event_text=summary_text,
-                ai_answer=result.get("answer"),
-                tool_summary=tool_summary,
-                audit_trace_id=trace_id,
-                audit_parent_id=result.get("audit_call_id"),
-            )
+                self._reflect_self_after_event(
+                    event_type="autonomous_cycle",
+                    event_text=summary_text,
+                    ai_answer=result.get("answer"),
+                    tool_summary=tool_summary,
+                    audit_trace_id=trace_id,
+                    audit_parent_id=result.get("audit_call_id"),
+                )
 
-            logger.info("Autonomous cycle completed in %sms", duration_ms)
-            return result
-        except Exception as error:
-            logger.error("Error in autonomous cycle: %s", error, exc_info=True)
-            return {
-                "status": "failed",
-                "error": str(error),
-                "title": "Autonomous cycle",
-                "duration_ms": int((time.time() - start_time) * 1000),
-                "tool_calls_executed": 0,
-                "tool_results": [],
-            }
+                logger.info("Autonomous cycle completed in %sms", duration_ms)
+                return result
+            except Exception as error:
+                logger.error("Error in autonomous cycle: %s", error, exc_info=True)
+                return {
+                    "status": "failed",
+                    "error": str(error),
+                    "title": "Autonomous cycle",
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                    "tool_calls_executed": 0,
+                    "tool_results": [],
+                }
 
     def run_hourly_task_generation(self, audit_trace_id: Optional[str] = None) -> Dict[str, Any]:
         """Backward-compatible alias for the old scheduler entry point."""
@@ -304,98 +310,101 @@ class ReActAgent:
         audit_logger = get_audit_logger()
         trace_id = audit_trace_id or audit_logger.new_id("instruction-run")
 
-        try:
-            if update_social_needs:
-                self.social_needs.apply_user_message(instruction_text)
+        with AI_ACTIVITY_TRACKER.active("instruction_call"):
+            try:
+                if update_social_needs:
+                    self.social_needs.apply_user_message(instruction_text)
 
-            task_type = self.classify_task_type(instruction_text, extra_context)
-            if task_type == "heavy":
-                runtime = AutonomyRuntime(lambda: self)
-                result = runtime.run_heavy_task_loop(
+                task_type = self.classify_task_type(instruction_text, extra_context)
+                if task_type == "heavy":
+                    runtime = AutonomyRuntime(lambda: self)
+                    result = runtime.run_heavy_task_loop(
+                        instruction_text,
+                        trace_id=trace_id,
+                        max_steps=HEAVY_TASK_MAX_STEPS,
+                        agent=self,
+                    )
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    result["duration_ms"] = duration_ms
+                    summary_text = result.get("answer") or result.get("summary") or instruction_text
+                    memory_note = self.generate_memory_note(
+                        event_title="instruction_call",
+                        event_summary=summary_text,
+                        instruction_text=instruction_text,
+                        answer_text=result.get("answer"),
+                        tool_context=self._safe_json(result.get("tool_results", [])),
+                        audit_trace_id=trace_id,
+                        audit_parent_id=result.get("audit_call_id"),
+                    )
+                    if memory_note.strip() and memory_note.strip().upper() != "NONE":
+                        self.memory.add_insight(memory_note)
+                    self._reflect_self_after_event(
+                        event_type="instruction_call",
+                        event_text=instruction_text,
+                        ai_answer=result.get("answer"),
+                        tool_summary=self._safe_json(result),
+                        audit_trace_id=trace_id,
+                        audit_parent_id=result.get("audit_call_id"),
+                    )
+                    return result
+
+                answer_text, instruction_call_id = self._run_direct_instruction(
                     instruction_text,
-                    trace_id=trace_id,
-                    max_steps=HEAVY_TASK_MAX_STEPS,
-                    agent=self,
+                    extra_context=extra_context,
+                    audit_trace_id=trace_id,
+                    audit_parent_id=trace_id,
                 )
+
+                if extra_context and self._looks_like_guidance(answer_text):
+                    answer_text = self._fallback_answer_from_context(extra_context, instruction_text)
+
+                if self._contains_code_block(answer_text):
+                    self.social_needs.apply_activity_event(
+                        "code_generation",
+                        text=answer_text,
+                        success=True,
+                        info_kind=infer_recovery_info_kind("code_generation", text=answer_text, success=True),
+                        metadata={"text": answer_text, "length": len(answer_text)},
+                    )
+
                 duration_ms = int((time.time() - start_time) * 1000)
-                result["duration_ms"] = duration_ms
-                summary_text = result.get("answer") or result.get("summary") or instruction_text
                 memory_note = self.generate_memory_note(
                     event_title="instruction_call",
-                    event_summary=summary_text,
+                    event_summary=answer_text,
                     instruction_text=instruction_text,
-                    answer_text=result.get("answer"),
-                    tool_context=self._safe_json(result.get("tool_results", [])),
+                    answer_text=answer_text,
+                    tool_context=extra_context,
                     audit_trace_id=trace_id,
-                    audit_parent_id=result.get("audit_call_id"),
+                    audit_parent_id=instruction_call_id,
                 )
                 if memory_note.strip() and memory_note.strip().upper() != "NONE":
                     self.memory.add_insight(memory_note)
+
                 self._reflect_self_after_event(
                     event_type="instruction_call",
                     event_text=instruction_text,
-                    ai_answer=result.get("answer"),
-                    tool_summary=self._safe_json(result),
+                    ai_answer=answer_text,
+                    tool_summary=extra_context,
                     audit_trace_id=trace_id,
-                    audit_parent_id=result.get("audit_call_id"),
-                )
-                return result
-
-            answer_text, instruction_call_id = self._run_direct_instruction(
-                instruction_text,
-                extra_context=extra_context,
-                audit_trace_id=trace_id,
-                audit_parent_id=trace_id,
-            )
-
-            if extra_context and self._looks_like_guidance(answer_text):
-                answer_text = self._fallback_answer_from_context(extra_context, instruction_text)
-
-            if self._contains_code_block(answer_text):
-                self.social_needs.apply_activity_event(
-                    "code_generation",
-                    text=answer_text,
-                    success=True,
+                    audit_parent_id=instruction_call_id,
                 )
 
-            duration_ms = int((time.time() - start_time) * 1000)
-            memory_note = self.generate_memory_note(
-                event_title="instruction_call",
-                event_summary=answer_text,
-                instruction_text=instruction_text,
-                answer_text=answer_text,
-                tool_context=extra_context,
-                audit_trace_id=trace_id,
-                audit_parent_id=instruction_call_id,
-            )
-            if memory_note.strip() and memory_note.strip().upper() != "NONE":
-                self.memory.add_insight(memory_note)
-
-            self._reflect_self_after_event(
-                event_type="instruction_call",
-                event_text=instruction_text,
-                ai_answer=answer_text,
-                tool_summary=extra_context,
-                audit_trace_id=trace_id,
-                audit_parent_id=instruction_call_id,
-            )
-
-            logger.info("Instruction-based AI call completed in %sms", duration_ms)
-            return {
-                "status": "completed",
-                "title": "Instruction-based AI call",
-                "answer": answer_text,
-                "duration_ms": duration_ms,
-                "audit_call_id": instruction_call_id,
-            }
-        except Exception as error:
-            logger.error("Error in instruction-based AI call: %s", error, exc_info=True)
-            return {
-                "status": "failed",
-                "error": str(error),
-                "title": "Instruction-based AI call",
-                "duration_ms": int((time.time() - start_time) * 1000),
-            }
+                logger.info("Instruction-based AI call completed in %sms", duration_ms)
+                return {
+                    "status": "completed",
+                    "title": "Instruction-based AI call",
+                    "answer": answer_text,
+                    "duration_ms": duration_ms,
+                    "audit_call_id": instruction_call_id,
+                }
+            except Exception as error:
+                logger.error("Error in instruction-based AI call: %s", error, exc_info=True)
+                return {
+                    "status": "failed",
+                    "error": str(error),
+                    "title": "Instruction-based AI call",
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                }
 
     def _run_direct_instruction(
         self,
@@ -433,46 +442,47 @@ class ReActAgent:
             {"role": "user", "content": prompt},
         ]
 
-        self.memory.record_api_call()
-        start_time = time.time()
-        response = self.llm_router.complete(
-            messages,
-            task_type=self.classify_task_type(instruction_text, extra_context),
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-        )
-        response_text = response.content
-        error_message: Optional[str] = response.error or None
+        with AI_ACTIVITY_TRACKER.active("direct_instruction"):
+            self.memory.record_api_call()
+            start_time = time.time()
+            response = self.llm_router.complete(
+                messages,
+                task_type=self.classify_task_type(instruction_text, extra_context),
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+            )
+            response_text = response.content
+            error_message: Optional[str] = response.error or None
 
-        if response_text:
-            final_answer = response_text
-        elif extra_context:
-            final_answer = self._fallback_answer_from_context(extra_context, instruction_text)
-        else:
-            final_answer = f"{instruction_text.strip()} については、いま応答本文を取得できませんでした。"
+            if response_text:
+                final_answer = response_text
+            elif extra_context:
+                final_answer = self._fallback_answer_from_context(extra_context, instruction_text)
+            else:
+                final_answer = f"{instruction_text.strip()} については、いま応答本文を取得できませんでした。"
 
-        audit_logger.log_ai_call(
-            call_type="instruction_response",
-            trigger="direct_instruction",
-            trace_id=audit_trace_id or call_id,
-            parent_id=audit_parent_id,
-            call_id=call_id,
-            model=response.model or self.model,
-            provider=response.provider,
-            reasoning_profile=self.classify_task_type(instruction_text, extra_context),
-            reasoning_effort=response.reasoning_effort,
-            duration_ms=int((time.time() - start_time) * 1000),
-            status="failed" if error_message else "completed",
-            request_payload={"messages": messages},
-            response_payload={
-                "raw_response_text": response_text,
-                "thinking_text": response.thinking_text,
-                "final_answer": final_answer,
-                "error": error_message,
-            },
-            error=error_message,
-        )
-        return final_answer, call_id
+            audit_logger.log_ai_call(
+                call_type="instruction_response",
+                trigger="direct_instruction",
+                trace_id=audit_trace_id or call_id,
+                parent_id=audit_parent_id,
+                call_id=call_id,
+                model=response.model or self.model,
+                provider=response.provider,
+                reasoning_profile=self.classify_task_type(instruction_text, extra_context),
+                reasoning_effort=response.reasoning_effort,
+                duration_ms=int((time.time() - start_time) * 1000),
+                status="failed" if error_message else "completed",
+                request_payload={"messages": messages},
+                response_payload={
+                    "raw_response_text": response_text,
+                    "thinking_text": response.thinking_text,
+                    "final_answer": final_answer,
+                    "error": error_message,
+                },
+                error=error_message,
+            )
+            return final_answer, call_id
 
     def _run_autonomous_tool_loop(
         self,
@@ -602,13 +612,13 @@ class ReActAgent:
             drive_context,
             "必要な機能が足りないなら、その場で self_development で補助実装を追加してから進んでください。",
             "欲求が深まっている場合は、欲求ごとの「満たし方」に従ってToolを使ってください。探求欲は self_development でコード読解・自己改善を優先し、必要なら web_search を使ってください。",
-            "playwright__ で始まるPlaywright MCP Toolも使えます。Xの自動ログイン、投稿、通知確認、反応確認、ページ遷移、フォーム入力はこれで直接操作してください。ログイン状態は永続プロフィールに保存されます。",
+            "playwright__ で始まるPlaywright MCP Toolも使えます。ブラウザ操作が必要なら、該当するToolで直接進めてください。ログイン状態は永続プロフィールに保存されます。",
             "必要な機能がまだ無いなら、まず self_development で補助実装を追加してから作業してください。",
             "長期的に続けたいこと、あとで再確認したいこと、自分をもう一度呼びたいことがあれば schedule_self_call を使って未来の自己呼び出しを予約してください。",
             "継続的な目的が生まれたら create_long_term_goal / update_long_term_goal で長期目標を残してください。",
             "自律実行ではPC側の一般書込・削除・電源・プロセス終了・危険なshell操作は使わないでください。ただし self_development の write_file は Ellie2 配下だけを検証付きで編集する専用Toolなので、必要なら使って構いません。",
-            "ユーザーに話しかけたい、提案したい、存在をアピールしたい場合は、文章だけで終えず overlay_show ツールで画面上に見える形で出してください。ただし overlay_show だけでは挑戦欲は満たされません。",
-            "overlay_show はクリックを邪魔しない透明オーバーレイなので、短い日本語テキストを左上付近に出す用途に使ってください。",
+            "ユーザーに見せたい内容は、文章だけで終えず overlay_show で画面上に出してください。",
+            "overlay_show は短い日本語テキストを見やすく表示する用途に使ってください。",
             f"overlay_show / overlay_update は必ず正の clear_after_ms を入れてください。指定がなければ {DEFAULT_OVERLAY_CLEAR_AFTER_MS} を使ってください。",
             "notify は具体的な結果・期限・次の行動があるときだけ使い、何かお手伝いできることがあれば教えてくださいのような空疎な文は出さないでください。",
         ]
@@ -737,6 +747,8 @@ class ReActAgent:
                 "creative_expression",
                 tool_names=successful_tools,
                 success=True,
+                info_kind=infer_recovery_info_kind("creative_expression", tool_name=successful_tools[0] if successful_tools else "", result={"tool_names": successful_tools}, success=True),
+                metadata={"tool_names": successful_tools},
             )
 
         if social_feedback_used:
@@ -744,6 +756,8 @@ class ReActAgent:
                 "social_feedback",
                 tool_names=successful_tools,
                 success=True,
+                info_kind=infer_recovery_info_kind("social_feedback", tool_name=successful_tools[0] if successful_tools else "", result={"tool_names": successful_tools}, success=True),
+                metadata={"tool_names": successful_tools},
             )
 
         if self_development_inspected:
@@ -751,6 +765,8 @@ class ReActAgent:
                 "self_development_inspect",
                 tool_names=successful_tools,
                 success=True,
+                info_kind=infer_recovery_info_kind("self_development_inspect", tool_name=successful_tools[0] if successful_tools else "", result={"tool_names": successful_tools}, success=True),
+                metadata={"tool_names": successful_tools},
             )
 
         if self_development_succeeded:
@@ -758,6 +774,8 @@ class ReActAgent:
                 "self_development_success",
                 tool_names=successful_tools,
                 success=True,
+                info_kind=infer_recovery_info_kind("self_development_success", tool_name=successful_tools[0] if successful_tools else "", result={"tool_names": successful_tools}, success=True),
+                metadata={"tool_names": successful_tools},
             )
 
         if read_like_used:
@@ -765,6 +783,8 @@ class ReActAgent:
                 "new_external_data",
                 tool_names=successful_tools,
                 success=True,
+                info_kind=infer_recovery_info_kind("new_external_data", tool_name=successful_tools[0] if successful_tools else "", result={"tool_names": successful_tools}, success=True),
+                metadata={"tool_names": successful_tools},
             )
 
         if medium_challenge_used:
@@ -772,6 +792,8 @@ class ReActAgent:
                 "medium_challenge_success",
                 tool_names=successful_tools,
                 success=True,
+                info_kind=infer_recovery_info_kind("medium_challenge_success", tool_name=successful_tools[0] if successful_tools else "", result={"tool_names": successful_tools}, success=True),
+                metadata={"tool_names": successful_tools},
             )
 
     def _contains_code_block(self, text: str) -> bool:
@@ -1136,7 +1158,7 @@ class ReActAgent:
             return tool_name in {"creative_expression", "twitter_post", "twitter_profile_edit", "overlay_show", "send_notification"} or tool_name.startswith("playwright__")
         if need_key == "approval":
             return (
-                tool_name in {"social_feedback_check", "twitter_post", "twitter_profile_edit", "overlay_show", "send_notification", "get_active_window"}
+                tool_name in {"social_feedback_check", "twitter_followers_check", "twitter_post", "twitter_profile_edit", "blog_post", "overlay_show", "send_notification", "get_active_window"}
                 or tool_name in SOCIAL_FEEDBACK_TOOL_NAMES
                 or tool_name.startswith("playwright__")
                 or self._is_read_like_tool(tool_name)

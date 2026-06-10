@@ -10,7 +10,7 @@ from agent.audit_log import get_audit_logger
 from agent.cerebras_agent import READ_LIKE_TOOL_NAMES, ReActAgent
 from agent.memory import MemoryManager
 from agent.self_model import SelfModelManager
-from agent.social_needs import SocialNeedsManager
+from agent.social_needs import SocialNeedsManager, infer_recovery_info_kind
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,8 @@ class InstructionRunner:
                 text=tool_context,
                 tool_names=read_tools,
                 success=True,
+                info_kind=infer_recovery_info_kind("new_external_data", tool_name=read_tools[0], text=tool_context, success=True),
+                metadata={"tool_context": tool_context, "read_tools": read_tools},
             )
         result = self.agent.run_with_instruction(
             instruction_text,
@@ -162,6 +164,24 @@ def build_tool_context(
 
     if _is_discord_voice_leave_request(instruction_text):
         return _run_discord_voice_leave(send_audited_pc_tool_call)
+
+    forced_followers_call = _forced_twitter_followers_check_call(instruction_text)
+    if forced_followers_call:
+        from agent.dynamic_tool_rag import ToolCallHandler
+
+        result = ToolCallHandler().handle(
+            forced_followers_call,
+            audit_trace_id=trace_id,
+            audit_parent_id=parent_id,
+            audit_phase="forced_instruction",
+        )
+        if isinstance(result, dict):
+            _apply_local_tool_social_recovery(social_needs, "twitter_followers_check", result)
+        return _format_local_tool_context(
+            "twitter_followers_check",
+            forced_followers_call.get("arguments", {}),
+            result if isinstance(result, dict) else {"status": "failed", "result": result},
+        )
 
     forced_profile_call = _forced_twitter_profile_edit_call(instruction_text)
     if forced_profile_call:
@@ -280,37 +300,132 @@ def _apply_local_tool_social_recovery(social_needs: Any | None, tool_name: str, 
     if status != "completed":
         return
     if tool_name.startswith("playwright__"):
-        social_needs.apply_activity_event("new_external_data", tool_names=[tool_name], success=True)
+        social_needs.apply_activity_event(
+            "new_external_data",
+            tool_names=[tool_name],
+            success=True,
+            info_kind=infer_recovery_info_kind("new_external_data", tool_name=tool_name, result=result, success=True),
+            metadata=result,
+        )
         lowered_tool = tool_name.casefold()
         if any(word in lowered_tool for word in ("login", "auth", "mention", "like", "retweet", "quote", "reply", "notification")):
-            social_needs.apply_activity_event("social_feedback", tool_names=[tool_name], success=True)
+            social_needs.apply_activity_event(
+                "social_feedback",
+                tool_names=[tool_name],
+                success=True,
+                info_kind=infer_recovery_info_kind("social_feedback", tool_name=tool_name, result=result, success=True),
+                metadata=result,
+            )
         if any(word in lowered_tool for word in ("post", "tweet", "run_code", "navigate", "fill", "click")):
-            social_needs.apply_activity_event("medium_challenge_success", tool_names=[tool_name], success=True)
+            social_needs.apply_activity_event(
+                "medium_challenge_success",
+                tool_names=[tool_name],
+                success=True,
+                info_kind=infer_recovery_info_kind("medium_challenge_success", tool_name=tool_name, result=result, success=True),
+                metadata=result,
+            )
         return
     if tool_name == "twitter_post":
-        social_needs.apply_activity_event("social_feedback", tool_names=[tool_name], success=True)
-        social_needs.apply_activity_event("creative_expression", tool_names=[tool_name], success=True)
-        social_needs.apply_activity_event("medium_challenge_success", tool_names=[tool_name], success=True)
+        social_needs.apply_activity_event(
+            "social_feedback",
+            tool_names=[tool_name],
+            success=True,
+            info_kind=infer_recovery_info_kind("social_feedback", tool_name=tool_name, result=result, success=True),
+            metadata=result,
+        )
+        social_needs.apply_activity_event(
+            "creative_expression",
+            tool_names=[tool_name],
+            success=True,
+            info_kind=infer_recovery_info_kind("creative_expression", tool_name=tool_name, result=result, success=True),
+            metadata=result,
+        )
+        social_needs.apply_activity_event(
+            "medium_challenge_success",
+            tool_names=[tool_name],
+            success=True,
+            info_kind=infer_recovery_info_kind("medium_challenge_success", tool_name=tool_name, result=result, success=True),
+            metadata=result,
+        )
+        return
+    if tool_name == "blog_post":
+        social_needs.apply_activity_event(
+            "social_feedback",
+            tool_names=[tool_name],
+            success=True,
+            info_kind=infer_recovery_info_kind("social_feedback", tool_name=tool_name, result=result, success=True),
+            metadata=result,
+        )
+        social_needs.apply_activity_event(
+            "creative_expression",
+            tool_names=[tool_name],
+            success=True,
+            info_kind=infer_recovery_info_kind("creative_expression", tool_name=tool_name, result=result, success=True),
+            metadata=result,
+        )
+        social_needs.apply_activity_event(
+            "medium_challenge_success",
+            tool_names=[tool_name],
+            success=True,
+            info_kind=infer_recovery_info_kind("medium_challenge_success", tool_name=tool_name, result=result, success=True),
+            metadata=result,
+        )
         return
     if tool_name == "web_search":
-        social_needs.apply_activity_event("new_external_data", tool_names=[tool_name], success=True)
+        social_needs.apply_activity_event(
+            "new_external_data",
+            tool_names=[tool_name],
+            success=True,
+            info_kind=infer_recovery_info_kind("new_external_data", tool_name=tool_name, result=result, success=True),
+            metadata=result,
+        )
     elif tool_name == "creative_expression":
-        social_needs.apply_activity_event("creative_expression", tool_names=[tool_name], success=True)
+        social_needs.apply_activity_event(
+            "creative_expression",
+            tool_names=[tool_name],
+            success=True,
+            info_kind=infer_recovery_info_kind("creative_expression", tool_name=tool_name, result=result, success=True),
+            metadata=result,
+        )
     elif tool_name == "self_development":
         action = str(result.get("action") or "").strip().casefold()
         if action in {"verify", "write_file"}:
-            social_needs.apply_activity_event("self_development_success", tool_names=[tool_name], success=True)
+            social_needs.apply_activity_event(
+                "self_development_success",
+                tool_names=[tool_name],
+                success=True,
+                info_kind=infer_recovery_info_kind("self_development_success", tool_name=tool_name, result=result, success=True),
+                metadata=result,
+            )
         else:
-            social_needs.apply_activity_event("self_development_inspect", tool_names=[tool_name], success=True)
+            social_needs.apply_activity_event(
+                "self_development_inspect",
+                tool_names=[tool_name],
+                success=True,
+                info_kind=infer_recovery_info_kind("self_development_inspect", tool_name=tool_name, result=result, success=True),
+                metadata=result,
+            )
     elif tool_name == "social_feedback_check":
-        social_needs.apply_activity_event("social_feedback", tool_names=[tool_name], success=True)
+        social_needs.apply_activity_event(
+            "social_feedback",
+            tool_names=[tool_name],
+            success=True,
+            info_kind=infer_recovery_info_kind("social_feedback", tool_name=tool_name, result=result, success=True),
+            metadata=result,
+        )
 
 
 def _apply_pc_tool_social_recovery(social_needs: Any | None, tool_name: str, bridge_result: Any) -> None:
     if social_needs is None or not getattr(bridge_result, "ok", False):
         return
     if tool_name in {"twitter_get_notifications", "twitter_get_mentions", "x_get_notifications", "x_get_mentions"}:
-        social_needs.apply_activity_event("social_feedback", tool_names=[tool_name], success=True)
+        social_needs.apply_activity_event(
+            "social_feedback",
+            tool_names=[tool_name],
+            success=True,
+            info_kind=infer_recovery_info_kind("social_feedback", tool_name=tool_name, result=getattr(bridge_result, "tool_result", None), success=True),
+            metadata=getattr(bridge_result, "tool_result", None),
+        )
 
 
 def _forced_pc_tool_call(instruction_text: str) -> JsonDict | None:
@@ -335,6 +450,22 @@ def _forced_twitter_post_call(instruction_text: str) -> JsonDict | None:
         "type": "tool_call",
         "call_id": "twitter-post-forced",
         "tool": "twitter_post",
+        "arguments": {},
+    }
+
+
+def _forced_twitter_followers_check_call(instruction_text: str) -> JsonDict | None:
+    lowered = instruction_text.lower()
+    if "フォロワー" not in instruction_text and "followers" not in lowered and "follower" not in lowered:
+        return None
+    if not any(word in lowered for word in ("twitter", "x", "ツイ", "tweet", "フォロワー")):
+        return None
+    if not any(word in instruction_text for word in ("確認", "調べ", "見", "count", "number", "数")) and "followers" not in lowered:
+        return None
+    return {
+        "type": "tool_call",
+        "call_id": "twitter-followers-check-forced",
+        "tool": "twitter_followers_check",
         "arguments": {},
     }
 

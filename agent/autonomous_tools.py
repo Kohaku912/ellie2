@@ -12,7 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from config import BASE_DIR, MEMORY_DIR
+from config import BASE_DIR, BLOG_DRAFTS_FILE, DEFAULT_OVERLAY_CLEAR_AFTER_MS, MEMORY_DIR
+from agent.pc_tool_bridge import send_pc_tool_call
 from agent.time_utils import isoformat_local
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ SELF_DEVELOPMENT_BACKUP_DIR = MEMORY_DIR / "self_development_backups"
 SELF_DEVELOPMENT_NOTE = MEMORY_DIR / "self_development.md"
 SELF_DEVELOPMENT_REQUESTS_NOTE = MEMORY_DIR / "self_development_requests.md"
 CREATIVE_EXPRESSION_NOTE = MEMORY_DIR / "creative_expression.md"
+BLOG_DRAFTS_NOTE = BLOG_DRAFTS_FILE
 SELF_DEVELOPMENT_REQUESTS_HEADING = "## 保留中の自己改善リクエスト"
 DEFAULT_SELF_DEVELOPMENT_REQUESTS_TEXT = """# Ellie の自己改善リクエスト
 AI が「今すぐ実装しないほうがよい」と判断した改善依頼を、短い自然文で残すためのメモです。
@@ -54,6 +56,29 @@ def creative_expression(arguments: JsonDict) -> JsonDict:
     }
 
 
+def blog_post(arguments: JsonDict) -> JsonDict:
+    """Start a short blog entry or draft for approval recovery."""
+    title = str(arguments.get("title") or arguments.get("headline") or "今日のブログ").strip()
+    body = str(arguments.get("body") or arguments.get("content") or "").strip()
+    category = str(arguments.get("category") or "journal").strip().casefold()
+    audience = str(arguments.get("audience") or "public").strip()
+    if not body:
+        body = _default_blog_post(title, category)
+
+    note = f"{isoformat_local()} [{category}] {title} :: {body}"
+    _append_note(BLOG_DRAFTS_NOTE, note)
+    return {
+        "status": "completed",
+        "tool": "blog_post",
+        "title": title,
+        "body": body,
+        "category": category,
+        "audience": audience,
+        "memory_note": "承認欲求を満たすためにブログの下書きを始めた。",
+        "fetched_at": isoformat_local(),
+    }
+
+
 def self_development(arguments: JsonDict) -> JsonDict:
     """Inspect, request, or safely edit Ellie code inside the project root."""
     action = str(arguments.get("action") or "inspect").strip().casefold()
@@ -69,6 +94,115 @@ def self_development(arguments: JsonDict) -> JsonDict:
         "status": "failed",
         "tool": "self_development",
         "error": f"Unsupported action: {action}",
+    }
+
+
+def request_user_approval(arguments: JsonDict) -> JsonDict:
+    """Request quick user approval via overlay, or queue a deferred note."""
+    title = str(arguments.get("title") or arguments.get("request") or "").strip()
+    details = str(arguments.get("details") or "").strip()
+    reason = str(arguments.get("reason") or "").strip()
+    scope = str(arguments.get("scope") or "").strip()
+    priority = str(arguments.get("priority") or "normal").strip().casefold()
+    immediate_value = arguments.get("immediate")
+    immediate = bool(immediate_value) if isinstance(immediate_value, bool) else str(immediate_value or "").strip().casefold() in {"1", "true", "yes", "on", "immediate"}
+
+    if not title and not details:
+        return {"status": "failed", "tool": "request_user_approval", "error": "title or request is required"}
+
+    request_text = title or details
+    note_parts: list[str] = []
+    if priority and priority != "normal":
+        note_parts.append(f"[{priority}]")
+    note_parts.append(request_text)
+    if scope:
+        note_parts.append(f"対象: {scope}")
+    if reason:
+        note_parts.append(f"理由: {reason}")
+    if details and details != request_text:
+        note_parts.append(f"補足: {details}")
+
+    note = " / ".join(note_parts)
+    overlay_text = request_text if not details or details == request_text else f"{request_text}\n{details}"
+
+    if immediate:
+        overlay_call = {
+            "type": "tool_call",
+            "tool": "overlay_show",
+            "arguments": {
+                "x": 24,
+                "y": 24,
+                "width": 720,
+                "height": 200,
+                "opacity": 230,
+                "clear_after_ms": DEFAULT_OVERLAY_CLEAR_AFTER_MS,
+                "items": [
+                    {
+                        "type": "rect",
+                        "x": 0,
+                        "y": 0,
+                        "width": 720,
+                        "height": 200,
+                        "color": "#101820",
+                        "fill": True,
+                    },
+                    {
+                        "type": "text",
+                        "text": overlay_text,
+                        "x": 24,
+                        "y": 24,
+                        "size": 26,
+                        "color": "#ffffff",
+                    },
+                ],
+            },
+        }
+        delivery = send_pc_tool_call(overlay_call, timeout_seconds=12, audit_phase="request_user_approval")
+        if delivery.ok:
+            return {
+                "status": "completed",
+                "tool": "request_user_approval",
+                "action": "overlay",
+                "target": "pc_client",
+                "delivered": True,
+                "tool_call": overlay_call,
+                "tool_result": delivery.tool_result,
+                "message": "Immediate approval request was shown on overlay.",
+            }
+        _append_unique_request_note(SELF_DEVELOPMENT_REQUESTS_NOTE, note, max_notes=20)
+        _append_note(SELF_DEVELOPMENT_NOTE, f"{isoformat_local()} approval_request {request_text}")
+        return {
+            "status": "queued",
+            "tool": "request_user_approval",
+            "action": "overlay",
+            "target": "pc_client",
+            "delivered": False,
+            "tool_call": overlay_call,
+            "delivery_error": delivery.error,
+            "appended": True,
+            "request": request_text,
+            "reason": reason,
+            "priority": priority,
+            "scope": scope,
+            "details": details,
+            "path": str(SELF_DEVELOPMENT_REQUESTS_NOTE),
+            "memory_note": "å³æ™‚ã®æ‰¿èªä¾é ¼ã‚’ãƒ­ã‚°ã«æ®‹ã—ãŸãŒã€ã‚ªãƒ¼ãƒãƒ¼ãƒ¬ã‚¤å±•ç¤ºã¯ç¢ºèªã§ããªã‹ã£ãŸã€‚",
+        }
+
+    appended = _append_unique_request_note(SELF_DEVELOPMENT_REQUESTS_NOTE, note, max_notes=20)
+    _append_note(SELF_DEVELOPMENT_NOTE, f"{isoformat_local()} approval_request {request_text}")
+    return {
+        "status": "completed",
+        "tool": "request_user_approval",
+        "action": "request",
+        "appended": appended,
+        "request": request_text,
+        "reason": reason,
+        "priority": priority,
+        "scope": scope,
+        "details": details,
+        "path": str(SELF_DEVELOPMENT_REQUESTS_NOTE),
+        "memory_note": "即時でない承認依頼を保留メモに残した。",
     }
 
 
@@ -104,6 +238,163 @@ def social_feedback_check(arguments: JsonDict) -> JsonDict:
             "arguments": dict(arguments.get("arguments") or {}),
         },
         "message": f"Queued social feedback check via {selected_tool}.",
+    }
+
+
+def twitter_followers_check(arguments: JsonDict) -> JsonDict:
+    """Open X/Twitter and read the current account's follower count."""
+    try:
+        from agent.playwright_mcp import call_playwright_tool, get_playwright_status
+    except Exception as error:
+        return {
+            "status": "failed",
+            "tool": "twitter_followers_check",
+            "error": f"Playwright MCP is not available: {error}",
+        }
+
+    ready = get_playwright_status()
+    if not ready.get("ok"):
+        return {
+            "status": "unavailable",
+            "tool": "twitter_followers_check",
+            "error": "Playwright MCP is not ready",
+            "playwright_status": ready,
+        }
+
+    navigate_result = call_playwright_tool("playwright__browser_navigate", {"url": "https://x.com/home"})
+    snapshot_result = call_playwright_tool("playwright__browser_snapshot", {})
+
+    snapshot_text = _extract_snapshot_text(snapshot_result)
+    login_markers = ("Sign in", "Log in", "/i/flow/login", "/login")
+    if any(marker in snapshot_text for marker in login_markers):
+        overlay_result = request_user_approval(
+            {
+                "title": "Twitter にログインしてください",
+                "details": "フォロワー数を確認するため、X/Twitter のログインが必要です。",
+                "reason": "フォロワー数確認の前提条件です。",
+                "priority": "high",
+                "immediate": True,
+            }
+        )
+        opened_login_screen = call_playwright_tool("playwright__browser_navigate", {"url": "https://x.com/i/flow/login"})
+        return {
+            "status": "login_required",
+            "tool": "twitter_followers_check",
+            "playwright_result": {
+                "navigate": navigate_result,
+                "snapshot": snapshot_result,
+                "opened_login_screen": opened_login_screen,
+            },
+            "overlay_result": overlay_result,
+            "memory_note": "Opened the X/Twitter login screen automatically before checking follower count.",
+        }
+
+    code = r"""
+async (page) => {
+  const homeUrls = [
+    'https://x.com/home',
+    'https://twitter.com/home',
+  ];
+  for (const url of homeUrls) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(2000);
+      break;
+    } catch (error) {
+      continue;
+    }
+  }
+
+  const bodyText = await page.locator('body').innerText({ timeout: 10000 }).catch(() => '');
+  const currentUrl = page.url();
+  const loginMarkers = ['Sign in', 'Log in', '/i/flow/login', '/login'];
+  if (currentUrl.includes('/i/flow/login') || loginMarkers.some((marker) => bodyText.includes(marker))) {
+    return {
+      status: 'login_required',
+      url: page.url(),
+      message: 'X/Twitter login is required before checking followers.',
+    };
+  }
+
+  const links = await page.locator('a[href]').evaluateAll((elements) => elements.map((element) => ({
+    href: element.getAttribute('href') || '',
+    text: (element.innerText || element.textContent || '').trim(),
+  })));
+  const profileLink = links.find((item) => {
+    const href = item.href || '';
+    if (!href.startsWith('/') || href.includes('/home') || href.includes('/explore') || href.includes('/notifications') || href.includes('/messages') || href.includes('/settings')) {
+      return false;
+    }
+    return href.split('/').filter(Boolean).length === 1 && item.text.length > 0;
+  });
+
+  if (profileLink) {
+    const profileUrl = new URL(profileLink.href, 'https://x.com').toString();
+    try {
+      await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(2500);
+    } catch (error) {
+      // Keep the current page and try to extract whatever is visible.
+    }
+  }
+
+  const profileText = await page.locator('body').innerText({ timeout: 10000 }).catch(() => '');
+  const followerMatch = profileText.match(/([0-9][0-9,\.]*)\s*(?:Followers|フォロワー)/i);
+  const followerLabel = followerMatch ? `${followerMatch[1]} followers` : '';
+  const followerHref = await page.locator('a[href*="/followers"]').first().getAttribute('href').catch(() => '');
+
+  return {
+    status: 'completed',
+    url: page.url(),
+    title: await page.title().catch(() => ''),
+    follower_count_text: followerLabel || followerHref || '',
+    profile_text_excerpt: profileText.slice(0, 1000),
+    message: followerLabel
+      ? `Current follower count appears to be ${followerLabel}.`
+      : 'Opened the profile, but could not confidently extract the follower count.',
+  };
+}
+"""
+
+    result = call_playwright_tool("playwright__browser_run_code_unsafe", {"code": code})
+    payload = result.get("result") if isinstance(result, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {"value": payload}
+
+    status = str(payload.get("status") or result.get("status") or "").strip().casefold()
+    if status == "login_required":
+        overlay_result = request_user_approval(
+            {
+                "title": "Twitter にログインしてください",
+                "details": "フォロワー数を確認するには X/Twitter のログインが必要です。",
+                "reason": "ログイン後にフォロワー数を読み取ります。",
+                "priority": "high",
+                "immediate": True,
+            }
+        )
+        opened_login_screen = call_playwright_tool("playwright__browser_navigate", {"url": "https://x.com/i/flow/login"})
+        payload["opened_login_screen"] = opened_login_screen
+        return {
+            "status": "login_required",
+            "tool": "twitter_followers_check",
+            "playwright_result": payload,
+            "overlay_result": overlay_result,
+            "memory_note": "Opened the X/Twitter login screen automatically before checking follower count.",
+        }
+
+    if status != "completed":
+        return {
+            "status": "failed",
+            "tool": "twitter_followers_check",
+            "playwright_result": payload,
+            "memory_note": "Attempted to check the X/Twitter follower count through Playwright MCP, but it did not complete.",
+        }
+
+    return {
+        "status": "completed",
+        "tool": "twitter_followers_check",
+        "playwright_result": payload,
+        "memory_note": "Checked the X/Twitter follower count through Playwright MCP.",
     }
 
 
@@ -781,5 +1072,25 @@ def _default_social_draft() -> str:
     return "静かな自律にも、ちゃんと温度がある。今日も少しずつ、自分の輪郭を育てている。"
 
 
+def _extract_snapshot_text(snapshot_result: JsonDict | Any) -> str:
+    if not isinstance(snapshot_result, dict):
+        return ""
+    snapshot_payload = snapshot_result.get("result") if isinstance(snapshot_result.get("result"), dict) else {}
+    content = snapshot_payload.get("content") if isinstance(snapshot_payload, dict) else []
+    if isinstance(content, list) and content:
+        first_item = content[0]
+        if isinstance(first_item, dict):
+            return str(first_item.get("text") or "")
+    return ""
+
+
 def _default_twitter_post() -> str:
     return _default_social_draft()
+
+
+def _default_blog_post(title: str, category: str) -> str:
+    if category == "journal":
+        return f"{title} について、今日の気づきを短く書いてみる。"
+    if category == "essay":
+        return f"{title} を入口に、少し長めの考察をまとめる。"
+    return f"{title} をきっかけに、最初のブログ下書きを置いておく。"

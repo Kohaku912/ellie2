@@ -102,6 +102,7 @@ class PlaywrightMcpManager:
         log_handle = log_path.open("a", encoding="utf-8", errors="replace")
         launcher = _resolve_npx_launcher()
         if launcher is None:
+            log_handle.close()
             return {
                 "ok": False,
                 "error": "npx が見つかりません。Node.js / npm をインストールして PATH に追加するか、PLAYWRIGHT_MCP_ENABLED=false にしてください。",
@@ -109,6 +110,7 @@ class PlaywrightMcpManager:
 
         browser_install_status = self._ensure_browser_installed(launcher)
         if not browser_install_status.get("ok"):
+            log_handle.close()
             return {
                 "ok": False,
                 "error": browser_install_status.get("error", "Failed to install Playwright browser."),
@@ -144,7 +146,9 @@ class PlaywrightMcpManager:
                 errors="replace",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            log_handle.close()
         except FileNotFoundError as error:
+            log_handle.close()
             return {
                 "ok": False,
                 "error": f"Playwright MCP を起動できませんでした: {error}",
@@ -162,16 +166,23 @@ class PlaywrightMcpManager:
         return status
 
     def _ensure_browser_installed(self, launcher: str) -> JsonDict:
+        browser_name = "chrome-for-testing"
         marker = PLAYWRIGHT_DIR / ".browser_installed"
         if marker.exists():
-            return {"ok": True, "cached": True}
+            cached_text = ""
+            try:
+                cached_text = marker.read_text(encoding="utf-8", errors="replace").strip()
+            except Exception:
+                cached_text = ""
+            if cached_text and browser_name in cached_text and "failed" not in cached_text.casefold():
+                return {"ok": True, "cached": True, "browser": browser_name}
 
         command = [
             launcher,
             "-y",
             "@playwright/mcp",
             "install-browser",
-            "chrome-for-testing",
+            browser_name,
         ]
         try:
             result = subprocess.run(
@@ -198,10 +209,10 @@ class PlaywrightMcpManager:
             }
 
         try:
-            marker.write_text(isoformat_local(), encoding="utf-8")
+            marker.write_text(f"browser={browser_name}\ninstalled_at={isoformat_local()}\n", encoding="utf-8")
         except Exception:
             logger.debug("Failed to write browser installation marker", exc_info=True)
-        return {"ok": True, "command": command, "returncode": result.returncode}
+        return {"ok": True, "command": command, "returncode": result.returncode, "browser": browser_name}
 
     def _base_status(self, ok: bool, status: str, error: str = "") -> JsonDict:
         return {

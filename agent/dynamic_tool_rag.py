@@ -1,4 +1,4 @@
-"""
+﻿"""
 Dynamic tool retrieval and AI tool-calling controller.
 
 This module keeps tool definitions out of the model context until an event
@@ -15,6 +15,7 @@ import re
 import subprocess
 import time
 import base64
+import hashlib
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,7 @@ from config import (
     CEREBRAS_MODEL,
     DEFAULT_OVERLAY_CLEAR_AFTER_MS,
     MAX_TOKENS,
+    TOOL_CAPABILITY_INDEX,
     TEMPERATURE,
 )
 from agent.audit_log import get_audit_logger
@@ -35,7 +37,14 @@ logger = logging.getLogger(__name__)
 
 
 JsonDict = Dict[str, Any]
-MANDATORY_CORE_TOOL_NAMES = ("web_search", "read_file_base64", "self_development", "execute_shell")
+MANDATORY_CORE_TOOL_NAMES = (
+    "web_search",
+    "read_file_base64",
+    "self_development",
+    "execute_shell",
+    "overlay_show",
+    "request_user_approval",
+)
 
 
 @dataclass(frozen=True)
@@ -197,8 +206,11 @@ class ToolCallHandler:
             "list_directory": self._handle_list_directory,
             "execute_shell": self._handle_execute_shell,
             "creative_expression": self._handle_creative_expression,
+            "blog_post": self._handle_blog_post,
             "self_development": self._handle_self_development,
+            "request_user_approval": self._handle_request_user_approval,
             "social_feedback_check": self._handle_social_feedback_check,
+            "twitter_followers_check": self._handle_twitter_followers_check,
             "twitter_post": self._handle_twitter_post,
             "twitter_profile_edit": self._handle_twitter_profile_edit,
             "schedule_self_call": self._handle_schedule_self_call,
@@ -363,6 +375,7 @@ class ToolCallHandler:
             "path": str(target),
             "data_base64": base64.b64encode(data).decode("ascii"),
             "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
         }
 
     def _handle_list_directory(self, arguments: JsonDict) -> JsonDict:
@@ -425,15 +438,30 @@ class ToolCallHandler:
 
         return creative_expression(arguments)
 
+    def _handle_blog_post(self, arguments: JsonDict) -> JsonDict:
+        from agent.autonomous_tools import blog_post
+
+        return blog_post(arguments)
+
     def _handle_self_development(self, arguments: JsonDict) -> JsonDict:
         from agent.autonomous_tools import self_development
 
         return self_development(arguments)
 
+    def _handle_request_user_approval(self, arguments: JsonDict) -> JsonDict:
+        from agent.autonomous_tools import request_user_approval
+
+        return request_user_approval(arguments)
+
     def _handle_social_feedback_check(self, arguments: JsonDict) -> JsonDict:
         from agent.autonomous_tools import social_feedback_check
 
         return social_feedback_check(arguments)
+
+    def _handle_twitter_followers_check(self, arguments: JsonDict) -> JsonDict:
+        from agent.autonomous_tools import twitter_followers_check
+
+        return twitter_followers_check(arguments)
 
     def _handle_twitter_post(self, arguments: JsonDict) -> JsonDict:
         from agent.autonomous_tools import twitter_post
@@ -677,7 +705,10 @@ class DynamicToolRAGController:
         selected_tools: Sequence[ToolDefinition],
         memory_context: str = "",
     ) -> List[JsonDict]:
-        tool_names = ", ".join(tool.name for tool in selected_tools)
+        extra_tool_names = ", ".join(
+            tool.name for tool in selected_tools if tool.name not in MANDATORY_CORE_TOOL_NAMES
+        )
+        extra_tool_names = extra_tool_names or "なし"
         drive_action_required = "DRIVE_ACTION_REQUIRED: true" in event_context
         memory_block = ""
         if memory_context.strip():
@@ -693,12 +724,15 @@ class DynamicToolRAGController:
 {event_context.strip()}
 
 ## 利用できるツール
-今回の状況に関連して取得されたツールは次のものだけです: {tool_names}
-また、調査・編集・実行のためのコアツール `web_search` / `read_file_base64` / `self_development` / `execute_shell` は常に利用可能です。
+今回の状況に関連して追加されたツール: {extra_tool_names}
+コア機能は system prompt 先頭の索引にあります。必要なときだけ、関係するものを選んでください。
 
 必要なら、本当に関係するツールだけを選び、妥当なJSON引数で呼び出してください。
 Twitter/X のプロフィール編集が必要なら twitter_profile_edit を使ってください。
-もし機能が足りない、見つからない、または不明なら、その場で self_development で不足分を補うか、足りない理由を先に言わず自分で埋めてください。
+X/Twitter のフォロワー数確認やログイン確認が必要なら twitter_followers_check を使ってください。
+ブラウザを開いたら、そこで止めず、必要な入力・遷移・確認・抽出まで続けてください。
+不足機能がある、見つからない、または不明なら、その場で self_development で不足分を補うか、足りない理由を先に言い訳せず自分で埋めてください。
+確認や承認が必要なら request_user_approval を使ってください。今すぐ見せる必要があれば overlay、急がないなら保留メモに回してください。
 overlay_show / overlay_update を使う場合は、必ず正の clear_after_ms を入れてください。指定がなければ {DEFAULT_OVERLAY_CLEAR_AFTER_MS} を使ってください。
 {self._tool_requirement_instruction(drive_action_required)}
 """
@@ -714,15 +748,16 @@ overlay_show / overlay_update を使う場合は、必ず正の clear_after_ms �
                 "取得されたツールから最も欲求を満たせる安全なToolを必ず1件以上呼び出してください。"
                 "PC側の一般書込や削除は避けますが、self_development の write_file は Ellie2 配下だけを検証付きで扱う専用Toolなので必要なら使えます。"
                 "playwright__ で始まるブラウザ操作ToolはXのログイン、投稿、通知確認、反応確認、ページ遷移、フォーム入力に使えます。"
-                "ツイッターに何か投稿したいときは twitter_post を最優先で使い、必要なら Playwright MCP を使って実投稿してください。"
+                "ツイッターに何か投稿したいときは twitter_post を優先し、必要なら Playwright MCP で実行してください。"
                 "notify は具体的な結果・期限・次の行動がある場合のみ使い、空疎な挨拶や手伝いの申し出だけを通知しないでください。"
             )
         return "不要なら、なぜ今は使わないのかを短く日本語で答えてください。"
 
     def _build_system_prompt(self) -> str:
+        base_prompt = f"{TOOL_CAPABILITY_INDEX}\n\n{AGENT_SYSTEM_PROMPT}".strip()
         if self.social_needs is None:
-            return AGENT_SYSTEM_PROMPT
-        return self.social_needs.build_system_prompt(AGENT_SYSTEM_PROMPT)
+            return base_prompt
+        return self.social_needs.build_system_prompt(base_prompt)
 
     def _merge_mandatory_core_tools(self, selected_tools: Sequence[ToolDefinition]) -> List[ToolDefinition]:
         from agent.tool_registry import get_available_tool_definitions
@@ -932,3 +967,4 @@ def _loads_json_object(text: str) -> Optional[JsonDict]:
         if isinstance(parsed, dict):
             return parsed
     return None
+

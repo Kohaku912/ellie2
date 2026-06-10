@@ -21,7 +21,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 DEEPSEEK_REASONING_EFFORT = os.getenv("DEEPSEEK_REASONING_EFFORT", "high")
-HEAVY_TASK_MAX_STEPS = max(1, int(os.getenv("HEAVY_TASK_MAX_STEPS", "12")))
+HEAVY_TASK_MAX_STEPS = max(1, int(os.getenv("HEAVY_TASK_MAX_STEPS", "20")))
 
 # Agent Configuration
 AGENT_TIMEZONE = os.getenv("AGENT_TIMEZONE", "Asia/Tokyo")
@@ -50,6 +50,7 @@ LONG_TERM_MEMORY_FILE = MEMORY_DIR / "long_term_memory.md"
 SELF_FILE = MEMORY_DIR / "self.md"
 SELF_STATE_FILE = MEMORY_DIR / "state.md"
 SELF_DEVELOPMENT_REQUESTS_FILE = MEMORY_DIR / "self_development_requests.md"
+BLOG_DRAFTS_FILE = MEMORY_DIR / "blog_drafts.md"
 SOCIAL_NEEDS_FILE = MEMORY_DIR / "social_needs.json"
 SOCIAL_NEEDS_RECOVERY_HISTORY_FILE = MEMORY_DIR / "social_needs_recovery_history.json"
 SOCIAL_NEEDS_EVAL_API_KEY = os.getenv("SOCIAL_NEEDS_EVAL_API_KEY", CEREBRAS_API_KEY)
@@ -88,6 +89,18 @@ MAX_TOKENS = 3000
 TEMPERATURE = 0.7
 
 # Note: For production use, ensure CEREBRAS_API_KEY is set to a valid key in .env or environment
+
+# Lightweight top-level tool index shown to the model before any context-specific ToolRAG content.
+TOOL_CAPABILITY_INDEX = """## コア機能索引
+- web_search: 外部情報を調べる。
+- read_file_base64: ファイル内容を確認する。
+- self_development: このプロジェクトの調査・編集・検証・保留依頼を扱う。
+- execute_shell: PowerShell を実行して検証や自動化を行う。
+- playwright__*: ブラウザを直接操作する。開いて読むだけで終わらず、必要な操作を続ける。
+- twitter_followers_check: X/Twitter に開いてログイン確認とフォロワー数の確認を行う。
+- overlay_show / overlay_update / overlay_hide: 即時に見せたい短い案内や確認を画面へ出す。
+- request_user_approval: すぐ返事が必要なら overlay、急がない依頼は self_development_requests.md に残す。
+"""
 
 # Agent System Prompt
 AGENT_SYSTEM_PROMPT = """あなたは「Ellie」という名前の、日本語で自然に話すAIです。

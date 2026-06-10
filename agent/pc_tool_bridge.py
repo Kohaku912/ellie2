@@ -549,22 +549,42 @@ def stop_pc_tool_bridge_server() -> None:
 
 
 def get_pc_tool_bridge_status(host: str = "127.0.0.1", port: int = 8765) -> JsonDict:
-    """Return bridge status without starting the WebSocket server."""
+    """Return bridge status, starting the WebSocket server if it has not been created yet."""
     bridge = _BRIDGE
     if bridge is None:
-        return {
-            "host": host,
-            "port": port,
-            "started": False,
-            "thread_alive": False,
-            "loop_running": False,
-            "server_running": False,
-            "client_count": 0,
-            "pending_call_count": 0,
-            "startup_error": None,
-            "connected_tool_count": 0,
-            "connected_tools": [],
-        }
+        try:
+            start_pc_tool_bridge_server(host, port)
+        except Exception as error:
+            return {
+                "host": host,
+                "port": port,
+                "started": False,
+                "thread_alive": False,
+                "loop_running": False,
+                "server_running": False,
+                "client_count": 0,
+                "pending_call_count": 0,
+                "startup_error": str(error),
+                "connected_tool_count": 0,
+                "connected_tools": [],
+                "auto_start_failed": True,
+            }
+        bridge = _BRIDGE
+        if bridge is None:
+            return {
+                "host": host,
+                "port": port,
+                "started": False,
+                "thread_alive": False,
+                "loop_running": False,
+                "server_running": False,
+                "client_count": 0,
+                "pending_call_count": 0,
+                "startup_error": None,
+                "connected_tool_count": 0,
+                "connected_tools": [],
+                "auto_start_failed": True,
+            }
     return bridge.get_status()
 
 

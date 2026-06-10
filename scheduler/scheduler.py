@@ -1,6 +1,6 @@
 """
 Scheduler for Autonomous AI Agent.
-Runs minute-level autonomous cycles and daily memory maintenance in Japan time.
+Runs periodic autonomous cycles and daily memory maintenance in Japan time.
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from agent.audit_log import get_audit_logger
+from agent.ai_activity import get_ai_activity_tracker
 from agent.autonomy_runtime import AutonomyRuntime
 from agent.cerebras_agent import ReActAgent
 from agent.memory import MemoryManager
@@ -21,6 +22,7 @@ from agent.time_utils import agent_tz, date_str_local, isoformat_local
 from config import EXECUTION_LOG_FILE
 
 logger = logging.getLogger(__name__)
+AI_ACTIVITY_TRACKER = get_ai_activity_tracker()
 
 
 class AutonomousAgentScheduler:
@@ -53,12 +55,12 @@ class AutonomousAgentScheduler:
     def _setup_jobs(self):
         self.scheduler.add_job(
             self.autonomous_task_loop,
-            CronTrigger(minute="*", timezone=agent_tz()),
-            id="minute_autonomous_tasks",
-            name="Minute autonomous cycle",
+            CronTrigger(minute="*/5", timezone=agent_tz()),
+            id="five_minute_autonomous_tasks",
+            name="Five-minute autonomous cycle",
             max_instances=1,
         )
-        logger.info("Scheduled autonomous cycle: every minute (Asia/Tokyo)")
+        logger.info("Scheduled autonomous cycle: every 5 minutes (Asia/Tokyo)")
 
         self.scheduler.add_job(
             self.daily_memory_reset,
@@ -80,7 +82,12 @@ class AutonomousAgentScheduler:
 
     def autonomous_task_loop(self):
         logger.info("=" * 60)
-        logger.info("Starting minute autonomous cycle")
+        if AI_ACTIVITY_TRACKER.is_active():
+            logger.info("Skipping minute autonomous cycle because AI is already running")
+            logger.info("=" * 60)
+            return
+
+        logger.info("Starting five-minute autonomous cycle")
         logger.info("Time: %s", isoformat_local())
         audit_logger = get_audit_logger()
         trace_id = audit_logger.new_id("minute-loop")
@@ -92,10 +99,10 @@ class AutonomousAgentScheduler:
             if result.get("answer"):
                 logger.info("Cycle answer: %s", str(result.get("answer"))[:300])
             self._log_execution(result)
-            logger.info("Minute autonomous cycle completed")
+            logger.info("Five-minute autonomous cycle completed")
             logger.info("=" * 60)
         except Exception as error:
-            logger.error("Error in minute autonomous cycle: %s", error, exc_info=True)
+            logger.error("Error in five-minute autonomous cycle: %s", error, exc_info=True)
             logger.info("=" * 60)
 
     def daily_memory_reset(self):

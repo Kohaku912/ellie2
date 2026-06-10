@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sys
 import types
@@ -89,7 +89,7 @@ def _install_external_stubs() -> None:
 
 class AuditLogTests(unittest.TestCase):
     def test_read_file_base64_payload_is_metadata_only(self) -> None:
-        from agent.audit_log import AuditLogger
+        from ellie.logging.audit_log import AuditLogger
 
         with TemporaryDirectory() as tmpdir:
             logger = AuditLogger(Path(tmpdir))
@@ -121,7 +121,7 @@ class ToolPromptTests(unittest.TestCase):
         _install_external_stubs()
 
     def test_system_prompt_includes_top_level_index(self) -> None:
-        from agent.dynamic_tool_rag import DynamicToolRAGController
+        from ellie.tools.dynamic_retrieval import DynamicToolRAGController
 
         controller = DynamicToolRAGController()
         prompt = controller._build_system_prompt()
@@ -132,8 +132,8 @@ class ToolPromptTests(unittest.TestCase):
         self.assertIn("overlay_show / overlay_update / overlay_hide", prompt)
 
     def test_dynamic_prompt_lists_only_context_specific_tools(self) -> None:
-        from agent.dynamic_tool_rag import DynamicToolRAGController
-        from agent.tool_registry import get_available_tool_definitions
+        from ellie.tools.dynamic_retrieval import DynamicToolRAGController
+        from ellie.tools.registry import get_available_tool_definitions
 
         controller = DynamicToolRAGController()
         tools = get_available_tool_definitions()
@@ -151,8 +151,8 @@ class SchedulerSkipTests(unittest.TestCase):
         _install_external_stubs()
 
     def test_minute_cycle_skips_when_ai_is_active(self) -> None:
-        from agent.ai_activity import get_ai_activity_tracker
-        from scheduler.scheduler import AutonomousAgentScheduler
+        from ellie.autonomy.ai_activity import get_ai_activity_tracker
+        from ellie.autonomy.scheduler import AutonomousAgentScheduler
 
         scheduler = AutonomousAgentScheduler()
         tracker = get_ai_activity_tracker()
@@ -172,12 +172,12 @@ class SchedulerSkipTests(unittest.TestCase):
 
 class HeavyTaskConfigTests(unittest.TestCase):
     def test_heavy_task_step_limit_is_relaxed(self) -> None:
-        import config
+        import ellie.config as config
 
         self.assertGreaterEqual(config.HEAVY_TASK_MAX_STEPS, 20)
 
     def test_heavy_task_core_tools_include_browser_and_approval_helpers(self) -> None:
-        from agent.autonomy_runtime import HEAVY_CORE_TOOL_NAMES
+        from ellie.autonomy.runtime import HEAVY_CORE_TOOL_NAMES
 
         self.assertIn("overlay_show", HEAVY_CORE_TOOL_NAMES)
         self.assertIn("request_user_approval", HEAVY_CORE_TOOL_NAMES)
@@ -190,7 +190,7 @@ class InstructionParsingTests(unittest.TestCase):
         _install_external_stubs()
 
     def test_followers_request_is_forced_to_follower_tool(self) -> None:
-        from agent.instruction_runner import _forced_twitter_followers_check_call
+        from ellie.core.instruction_runner import _forced_twitter_followers_check_call
 
         call = _forced_twitter_followers_check_call("自分のツイッターのフォロワー数を確認して")
 
@@ -204,7 +204,7 @@ class PlaywrightMcpTests(unittest.TestCase):
         _install_external_stubs()
 
     def test_stale_browser_marker_triggers_reinstall(self) -> None:
-        import agent.playwright_mcp as playwright_mcp
+        import ellie.mcp.playwright.client as playwright_mcp
 
         with TemporaryDirectory() as tmpdir:
             play_dir = Path(tmpdir)
@@ -233,7 +233,7 @@ class PcToolBridgeTests(unittest.TestCase):
         _install_external_stubs()
 
     def test_bridge_status_autostarts_when_not_initialized(self) -> None:
-        import agent.pc_tool_bridge as pc_tool_bridge
+        import ellie.mcp.pc_bridge.bridge as pc_tool_bridge
 
         original_bridge = pc_tool_bridge._BRIDGE
         self.addCleanup(lambda: setattr(pc_tool_bridge, "_BRIDGE", original_bridge))
@@ -268,7 +268,7 @@ class ApprovalOverlayTests(unittest.TestCase):
         _install_external_stubs()
 
     def test_immediate_request_user_approval_sends_overlay(self) -> None:
-        from agent import autonomous_tools
+        from ellie.tools import autonomous_tools
 
         delivery = types.SimpleNamespace(ok=True, tool_result={"ok": True}, error=None)
         with mock.patch.object(autonomous_tools, "send_pc_tool_call", return_value=delivery) as send_mock:
@@ -289,7 +289,7 @@ class TwitterFollowersTests(unittest.TestCase):
         _install_external_stubs()
 
     def test_followers_check_asks_for_login_when_login_required(self) -> None:
-        from agent import autonomous_tools
+        from ellie.tools import autonomous_tools
 
         snapshots = iter([
             {"result": {"content": [{"type": "text", "text": "Sign in"}]}, "status": "completed"},
@@ -304,8 +304,8 @@ class TwitterFollowersTests(unittest.TestCase):
                 return {"status": "completed", "tool": tool_name, "result": {"status": "login_required"}}
             return {"status": "completed", "tool": tool_name}
 
-        with mock.patch("agent.playwright_mcp.call_playwright_tool", side_effect=_call), mock.patch(
-            "agent.playwright_mcp.get_playwright_status",
+        with mock.patch("ellie.mcp.playwright.tools.call_playwright_tool", side_effect=_call), mock.patch(
+            "ellie.mcp.playwright.tools.get_playwright_status",
             return_value={"ok": True},
         ), mock.patch.object(autonomous_tools, "request_user_approval", return_value={"status": "completed", "delivered": True}) as approval_mock:
             result = autonomous_tools.twitter_followers_check({})
@@ -321,7 +321,7 @@ class SocialNeedsRecoveryTests(unittest.TestCase):
         _install_external_stubs()
 
     def _make_manager(self):
-        from agent.social_needs import SocialNeedsManager
+        from ellie.memory.social_needs import SocialNeedsManager
 
         tmpdir = TemporaryDirectory()
         self.addCleanup(tmpdir.cleanup)
@@ -457,7 +457,7 @@ class AutonomousOverlayTests(unittest.TestCase):
         _install_external_stubs()
 
     def test_autonomous_cycle_shows_start_overlay(self) -> None:
-        from agent.cerebras_agent import ReActAgent
+        from ellie.core.agent import ReActAgent
 
         memory = types.SimpleNamespace(
             get_memory_context=lambda: "",
@@ -498,3 +498,4 @@ class AutonomousOverlayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

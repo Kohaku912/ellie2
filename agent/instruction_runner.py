@@ -442,9 +442,9 @@ def _forced_pc_tool_call(instruction_text: str) -> JsonDict | None:
 
 def _forced_twitter_post_call(instruction_text: str) -> JsonDict | None:
     lowered = instruction_text.lower()
-    if not any(word in lowered for word in ("twitter", "x", "????", "??", "???", "tweet")):
+    if not any(word in lowered for word in ("twitter", "x", "ツイ", "tweet", "post", "投稿", "ツイート")):
         return None
-    if any(word in lowered for word in ("???", "draft", "???")) and not any(word in lowered for word in ("??", "????", "????", "?????", "tweet??")):
+    if any(word in lowered for word in ("draft", "下書き", "案")) and not any(word in lowered for word in ("tweet", "post", "投稿", "ツイート", "つぶやき")):
         return None
     return {
         "type": "tool_call",
@@ -472,9 +472,9 @@ def _forced_twitter_followers_check_call(instruction_text: str) -> JsonDict | No
 
 def _forced_twitter_profile_edit_call(instruction_text: str) -> JsonDict | None:
     lowered = instruction_text.lower()
-    if not any(word in lowered for word in ("twitter", "x", "?????", "??????", "profile", "????", "bio")):
+    if not any(word in lowered for word in ("twitter", "x", "ツイ", "profile", "bio", "プロフィール", "自己紹介", "表示名")):
         return None
-    if not any(word in lowered for word in ("??", "??", "???", "update", "edit", "??????")):
+    if not any(word in lowered for word in ("update", "edit", "プロフィール", "自己紹介", "表示名", "bio", "name")):
         return None
     return {
         "type": "tool_call",

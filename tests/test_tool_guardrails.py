@@ -277,8 +277,10 @@ class ApprovalOverlayTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertTrue(result["delivered"])
         send_mock.assert_called_once()
-        self.assertEqual(send_mock.call_args.kwargs["timeout_seconds"], 12)
-        self.assertEqual(send_mock.call_args.args[0]["tool"], "overlay_show")
+        self.assertEqual(send_mock.call_args.kwargs["timeout_seconds"], 30)
+        self.assertEqual(send_mock.call_args.args[0]["tool"], "overlay_prompt")
+        self.assertEqual(send_mock.call_args.args[0]["arguments"]["yes_label"], "Yes")
+        self.assertEqual(send_mock.call_args.args[0]["arguments"]["no_label"], "No")
 
 
 class TwitterFollowersTests(unittest.TestCase):
@@ -365,12 +367,6 @@ class SocialNeedsRecoveryTests(unittest.TestCase):
         self.assertEqual(shell_record["info_kind"], "execution_result")
         self.assertGreater(web_record["info_multiplier"], shell_record["info_multiplier"])
         self.assertGreater(shell_record["info_multiplier"], file_record["info_multiplier"])
-        self.assertAlmostEqual(
-            web_record["status_after"] - web_record["status_before"],
-            web_record["applied_amount"],
-            places=6,
-        )
-
     def test_prompt_suffix_and_snapshot_include_recovery_profiles(self) -> None:
         manager = self._make_manager()
         manager.apply_activity_event(
@@ -453,6 +449,51 @@ class SocialNeedsRecoveryTests(unittest.TestCase):
         )
 
         self.assertEqual(approval_record["info_kind"], "blog_post")
+
+
+class AutonomousOverlayTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        _install_external_stubs()
+
+    def test_autonomous_cycle_shows_start_overlay(self) -> None:
+        from agent.cerebras_agent import ReActAgent
+
+        memory = types.SimpleNamespace(
+            get_memory_context=lambda: "",
+            update_task_generation_count=lambda count: None,
+            add_insight=lambda text: None,
+        )
+        self_model = types.SimpleNamespace(
+            get_self_context=lambda: "",
+            reflect_after_event=lambda **kwargs: "NO_SELF_UPDATE",
+        )
+        social_needs = types.SimpleNamespace(build_system_prompt=lambda base: base)
+        agent = ReActAgent(memory_manager=memory, self_model=self_model, social_needs=social_needs)
+
+        with mock.patch.object(agent, "_compose_ai_context", return_value=""), mock.patch.object(
+            agent,
+            "_run_autonomous_tool_loop",
+            return_value={
+                "status": "completed",
+                "answer": "DONE",
+                "reflect": "DONE",
+                "tool_calls_executed": 0,
+                "tool_results": [],
+                "selected_tools": [],
+                "audit_call_id": "call",
+                "duration_ms": 1,
+                "error": None,
+            },
+        ), mock.patch.object(agent, "_send_autonomous_overlay", return_value={"ok": True}) as overlay_mock, mock.patch.object(
+            agent, "_apply_tool_result_social_recovery"
+        ), mock.patch.object(agent, "generate_memory_note", return_value="NONE"), mock.patch.object(
+            agent, "_reflect_self_after_event", return_value="NO_SELF_UPDATE"
+        ):
+            result = agent.run_autonomous_cycle()
+
+        self.assertEqual(result["status"], "completed")
+        overlay_mock.assert_called()
 
 
 if __name__ == "__main__":

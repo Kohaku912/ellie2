@@ -128,53 +128,42 @@ def request_user_approval(arguments: JsonDict) -> JsonDict:
     if immediate:
         overlay_call = {
             "type": "tool_call",
-            "tool": "overlay_show",
+            "tool": "overlay_prompt",
             "arguments": {
-                "x": 24,
-                "y": 24,
-                "width": 720,
-                "height": 200,
-                "opacity": 230,
+                "x": 80,
+                "y": 80,
+                "width": 560,
+                "height": 240,
+                "opacity": 235,
                 "clear_after_ms": DEFAULT_OVERLAY_CLEAR_AFTER_MS,
-                "items": [
-                    {
-                        "type": "rect",
-                        "x": 0,
-                        "y": 0,
-                        "width": 720,
-                        "height": 200,
-                        "color": "#101820",
-                        "fill": True,
-                    },
-                    {
-                        "type": "text",
-                        "text": overlay_text,
-                        "x": 24,
-                        "y": 24,
-                        "size": 26,
-                        "color": "#ffffff",
-                    },
-                ],
+                "message": overlay_text,
+                "yes_label": "Yes",
+                "no_label": "No",
             },
         }
-        delivery = send_pc_tool_call(overlay_call, timeout_seconds=12, audit_phase="request_user_approval")
+        delivery = send_pc_tool_call(overlay_call, timeout_seconds=30, audit_phase="request_user_approval")
         if delivery.ok:
+            tool_result = delivery.tool_result if isinstance(delivery.tool_result, dict) else {}
+            selected = str(tool_result.get("selected", "")).strip().lower() if tool_result else ""
+            approved = selected == "yes"
             return {
                 "status": "completed",
                 "tool": "request_user_approval",
-                "action": "overlay",
+                "action": "prompt",
                 "target": "pc_client",
                 "delivered": True,
+                "approved": approved,
+                "choice": selected,
                 "tool_call": overlay_call,
-                "tool_result": delivery.tool_result,
-                "message": "Immediate approval request was shown on overlay.",
+                "tool_result": tool_result,
+                "message": f"Immediate approval prompt was shown on overlay. User chose: {selected}.",
             }
         _append_unique_request_note(SELF_DEVELOPMENT_REQUESTS_NOTE, note, max_notes=20)
         _append_note(SELF_DEVELOPMENT_NOTE, f"{isoformat_local()} approval_request {request_text}")
         return {
             "status": "queued",
             "tool": "request_user_approval",
-            "action": "overlay",
+            "action": "prompt",
             "target": "pc_client",
             "delivered": False,
             "tool_call": overlay_call,
@@ -186,7 +175,7 @@ def request_user_approval(arguments: JsonDict) -> JsonDict:
             "scope": scope,
             "details": details,
             "path": str(SELF_DEVELOPMENT_REQUESTS_NOTE),
-            "memory_note": "å³æ™‚ã®æ‰¿èªä¾é ¼ã‚’ãƒ­ã‚°ã«æ®‹ã—ãŸãŒã€ã‚ªãƒ¼ãƒãƒ¼ãƒ¬ã‚¤å±•ç¤ºã¯ç¢ºèªã§ããªã‹ã£ãŸã€‚",
+            "memory_note": "Immediate approval prompt was shown on overlay.",
         }
 
     appended = _append_unique_request_note(SELF_DEVELOPMENT_REQUESTS_NOTE, note, max_notes=20)

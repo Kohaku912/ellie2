@@ -1,4 +1,4 @@
-﻿"""
+"""
 Dynamic tool retrieval and AI tool-calling controller.
 
 This module keeps tool definitions out of the model context until an event
@@ -731,9 +731,7 @@ class DynamicToolRAGController:
 Twitter/X のプロフィール編集が必要なら twitter_profile_edit を使ってください。
 X/Twitter のフォロワー数確認やログイン確認が必要なら twitter_followers_check を使ってください。
 ブラウザを開いたら、そこで止めず、必要な入力・遷移・確認・抽出まで続けてください。
-不足機能がある、見つからない、または不明なら、その場で self_development で不足分を補うか、足りない理由を先に言い訳せず自分で埋めてください。
-確認や承認が必要なら request_user_approval を使ってください。今すぐ見せる必要があれば overlay、急がないなら保留メモに回してください。
-overlay_show / overlay_update を使う場合は、必ず正の clear_after_ms を入れてください。指定がなければ {DEFAULT_OVERLAY_CLEAR_AFTER_MS} を使ってください。
+確認や承認が必要なら request_user_approval を使ってください。今すぐ返事が必要なら overlay_prompt、短い案内だけなら overlay_show、急がないなら保留メモに回してください。
 {self._tool_requirement_instruction(drive_action_required)}
 """
         return [

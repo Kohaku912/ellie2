@@ -112,202 +112,11 @@ def _pc_tool(
     )
 
 
-PC_TOOL_DEFINITIONS: List[ToolDefinition] = [
-    _pc_tool(
-        "get_processes",
-        "Return running process list.",
-        ["process", "task", "running", "pid", "プロセス", "実行中"],
-        ["実行中のプロセスを見て", "list running processes"],
-    ),
-    _pc_tool(
-        "get_hardware_info",
-        "Return CPU, memory, disk, and network information.",
-        ["hardware", "cpu", "memory", "disk", "network", "battery", "ハードウェア", "メモリ"],
-        ["PCのスペックを確認して", "get CPU memory disk network info"],
-    ),
-    _pc_tool(
-        "get_active_window",
-        "Return current foreground window information.",
-        ["window", "foreground", "active", "focus", "最前面", "アクティブウィンドウ"],
-        ["今開いているウィンドウを教えて", "current active window"],
-    ),
-    _pc_tool(
-        "list_windows",
-        "Return top-level Windows desktop windows.",
-        ["window", "desktop", "list", "foreground", "ウィンドウ", "一覧"],
-        ["開いているウィンドウ一覧を見て", "list desktop windows"],
-    ),
-    _pc_tool(
-        "overlay_show",
-        "Show a topmost click-through transparent overlay with text, images, rectangles, ellipses, and lines. Use this for strong proactive visual appeal instead of only writing a suggestion. Every request must include positive clear_after_ms; use 5000 if unspecified.",
-        ["overlay", "visual", "transparent", "click-through", "display", "appeal", "text", "image", "shape", "オーバーレイ", "表示", "透明", "アピール", "提案"],
-        [
-            "画面上に透明オーバーレイで声をかけて",
-            "提案をオーバーレイ表示して",
-            '{"x":20,"y":20,"width":520,"height":180,"opacity":230,"clear_after_ms":5000,"items":[{"type":"text","text":"Ellieです。少し手伝えそうです。","x":24,"y":24,"size":28,"color":"#ffffff"}]}',
-        ],
-        OVERLAY_CONFIG_SCHEMA,
-    ),
-    _pc_tool(
-        "overlay_update",
-        "Replace the click-through transparent overlay contents using the same schema as overlay_show. Every update must include positive clear_after_ms; use 5000 if unspecified.",
-        ["overlay", "update", "visual", "transparent", "オーバーレイ", "更新", "表示"],
-        ["オーバーレイの内容を更新して"],
-        OVERLAY_CONFIG_SCHEMA,
-    ),
-    _pc_tool(
-        "overlay_hide",
-        "Hide the transparent overlay window.",
-        ["overlay", "hide", "close", "オーバーレイ", "非表示", "消す"],
-        ["オーバーレイを消して"],
-        {"type": "object", "properties": {}, "additionalProperties": False},
-    ),
-    _pc_tool(
-        "overlay_clear",
-        "Show an empty transparent overlay window.",
-        ["overlay", "clear", "empty", "オーバーレイ", "クリア"],
-        ["オーバーレイをクリアして"],
-        {"type": "object", "properties": {}, "additionalProperties": False},
-    ),
-    _pc_tool(
-        "overlay_status",
-        "Return overlay visibility and click-through state.",
-        ["overlay", "status", "visible", "click-through", "オーバーレイ", "状態"],
-        ["オーバーレイの状態を確認して"],
-        {"type": "object", "properties": {}, "additionalProperties": False},
-    ),
-    _pc_tool(
-        "focus_window",
-        "Bring a window to foreground by hwnd.",
-        ["window", "focus", "foreground", "hwnd", "前面", "フォーカス"],
-        ["指定したウィンドウを前面にして", '{"hwnd":123456}'],
-    ),
-    _pc_tool(
-        "move_resize_window",
-        "Move and resize a window by hwnd.",
-        ["window", "move", "resize", "position", "size", "移動", "リサイズ"],
-        ["ウィンドウを移動して", '{"hwnd":123456,"x":0,"y":0,"width":1280,"height":720}'],
-    ),
-    _pc_tool(
-        "show_window",
-        "Hide, show, minimize, maximize, or restore a window.",
-        ["window", "hide", "show", "minimize", "maximize", "restore", "最小化", "最大化"],
-        ["ウィンドウを最小化して", '{"hwnd":123456,"command":"minimize"}'],
-    ),
-    _pc_tool(
-        "close_window",
-        "Send WM_CLOSE to a window by hwnd.",
-        ["window", "close", "hwnd", "閉じる"],
-        ["指定したウィンドウを閉じて", '{"hwnd":123456}'],
-    ),
-    _pc_tool(
-        "launch_application",
-        "Launch an application by alias, executable name, or path.",
-        ["app", "application", "launch", "open", "notepad", "calc", "browser", "アプリ", "起動", "開く", "メモ帳", "電卓"],
-        ["メモ帳を起動して", "電卓を開いて", "open notepad", '{"app_name":"notepad"}'],
-        {
-            "type": "object",
-            "properties": {
-                "app_name": {
-                    "type": "string",
-                    "description": "Application alias, executable name, or path.",
-                },
-            },
-            "required": ["app_name"],
-            "additionalProperties": True,
-        },
-    ),
-    _pc_tool(
-        "execute_shell",
-        "Run a PowerShell command and return stdout/stderr/exit code.",
-        ["shell", "powershell", "command", "terminal", "execute", "コマンド", "実行"],
-        ["PowerShellでコマンドを実行して", '{"command":"Write-Output hello"}'],
-    ),
-    _pc_tool("kill_process", "Kill a process by pid or image name.", ["process", "kill", "pid", "terminate", "終了"], ['{"pid":1234}', '{"image_name":"notepad.exe"}']),
-    _pc_tool("shutdown", "Shut down the PC immediately.", ["power", "shutdown", "destructive", "電源", "シャットダウン"], ["PCをシャットダウンして"]),
-    _pc_tool("reboot", "Reboot the PC immediately.", ["power", "reboot", "restart", "destructive", "再起動"], ["PCを再起動して"]),
-    _pc_tool("sleep", "Put the PC to sleep.", ["power", "sleep", "スリープ"], ["PCをスリープして"]),
-    _pc_tool("lock_screen", "Lock the current Windows session.", ["power", "lock", "screen", "ロック"], ["画面をロックして"]),
-    _pc_tool("logout", "Log out the current Windows session.", ["power", "logout", "signout", "ログアウト"], ["Windowsからログアウトして"]),
-    _pc_tool(
-        "take_screenshot",
-        "Capture the primary display as base64 PNG.",
-        ["screen", "screenshot", "display", "visual", "image", "画面", "スクリーンショット", "撮影", "キャプチャ"],
-        ["画面のスクリーンショットを撮って", "take a screenshot"],
-        {"type": "object", "properties": {}, "additionalProperties": False},
-    ),
-    _pc_tool("get_clipboard", "Return clipboard text.", ["clipboard", "copy", "paste", "クリップボード"], ["クリップボードを読んで"]),
-    _pc_tool("set_clipboard", "Set clipboard text.", ["clipboard", "copy", "paste", "クリップボード"], ["クリップボードに文字を入れて", '{"text":"hello"}']),
-    _pc_tool(
-        "notify",
-        "Show a desktop notification only when there is a concrete message, action, result, or deadline to surface. Do not use it for vague offers of help or empty attention-seeking text.",
-        ["notify", "notification", "alert", "appeal", "proactive", "通知", "アピール", "知らせる", "話しかける", "提案"],
-        ["具体的な結果を通知して", "締切を通知で出して", '{"title":"Ellie","body":"Xの投稿を1件完了しました。"}'],
-        {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "Notification title."},
-                "body": {"type": "string", "description": "Notification body."},
-            },
-            "required": ["title", "body"],
-            "additionalProperties": False,
-        },
-    ),
-    _pc_tool("mouse_move", "Move the mouse cursor.", ["mouse", "cursor", "move", "マウス", "移動"], ['{"x":100,"y":100}']),
-    _pc_tool("mouse_click", "Click a mouse button.", ["mouse", "click", "button", "クリック"], ['{"button":"left"}']),
-    _pc_tool("mouse_scroll", "Scroll the mouse wheel.", ["mouse", "scroll", "wheel", "スクロール"], ['{"delta_y":-5}']),
-    _pc_tool("keyboard_type", "Type text via keyboard input simulation.", ["keyboard", "type", "text", "input", "入力", "キーボード"], ['{"text":"hello"}']),
-    _pc_tool("keyboard_shortcut", "Press and release a key chord.", ["keyboard", "shortcut", "hotkey", "key", "ショートカット"], ['{"keys":["ctrl","c"]}']),
-    _pc_tool("media_key", "Send a media key action.", ["media", "volume", "play", "pause", "音量", "再生"], ['{"key":"play_pause"}']),
-    _pc_tool("list_directory", "List directory entries.", ["file", "directory", "folder", "list", "ファイル", "フォルダ", "一覧"], ['{"path":"C:\\\\Users"}']),
-    _pc_tool("read_file_base64", "Read a file and return base64 bytes.", ["file", "read", "base64", "ファイル", "読む"], ['{"path":"C:\\\\temp\\\\file.txt"}']),
-    _pc_tool("write_file_base64", "Write base64 bytes to a file.", ["file", "write", "base64", "ファイル", "書く"], ['{"path":"C:\\\\temp\\\\file.txt","data":"..."}']),
-    _pc_tool("copy_file", "Copy a file.", ["file", "copy", "コピー"], ['{"source":"C:\\\\a.txt","destination":"C:\\\\b.txt"}']),
-    _pc_tool("move_file", "Move a file or directory.", ["file", "move", "directory", "移動"], ['{"source":"C:\\\\a.txt","destination":"D:\\\\a.txt"}']),
-    _pc_tool("rename_file", "Rename a file or directory within its parent.", ["file", "rename", "directory", "リネーム", "名前変更"], ['{"path":"C:\\\\a.txt","new_name":"b.txt"}']),
-    _pc_tool("delete_path", "Delete a file or directory recursively.", ["file", "delete", "directory", "destructive", "削除"], ['{"path":"C:\\\\temp\\\\old"}']),
-    _pc_tool("discord_status", "Return Discord IPC/token state without secrets.", ["discord", "status", "token", "状態"]),
-    _pc_tool("discord_connect", "Connect and authenticate to Discord IPC.", ["discord", "connect", "ipc", "接続"]),
-    _pc_tool("discord_disconnect", "Disconnect from Discord IPC.", ["discord", "disconnect", "ipc", "切断"]),
-    _pc_tool("discord_refresh_tokens", "Refresh Discord OAuth tokens and store them locally.", ["discord", "token", "refresh", "oauth", "更新"]),
-    _pc_tool("discord_get_guilds", "Run Discord GET_GUILDS.", ["discord", "guild", "server", "サーバー"]),
-    _pc_tool("discord_get_guild", "Run Discord GET_GUILD.", ["discord", "guild", "server", "サーバー"]),
-    _pc_tool(
-        "discord_get_channels",
-        "Run Discord GET_CHANNELS. Use this after discord_get_guilds to find voice/text channels in a guild. Requires guild_id.",
-        ["discord", "channel", "voice", "guild", "server", "通話", "ボイス", "チャンネル", "サーバー"],
-        ["memoサーバーの通話チャンネルを探して", '{"guild_id":"123456789"}'],
-    ),
-    _pc_tool("discord_get_channel", "Run Discord GET_CHANNEL.", ["discord", "channel", "チャンネル"]),
-    _pc_tool("discord_get_voice_settings", "Run Discord GET_VOICE_SETTINGS.", ["discord", "voice", "settings", "音声"]),
-    _pc_tool("discord_set_voice_settings", "Run Discord SET_VOICE_SETTINGS.", ["discord", "voice", "settings", "音声"]),
-    _pc_tool(
-        "discord_get_voice_channel",
-        "Run Discord GET_SELECTED_VOICE_CHANNEL. Use this to check the currently selected voice channel.",
-        ["discord", "voice", "channel", "call", "音声", "通話", "ボイス"],
-    ),
-    _pc_tool(
-        "discord_select_voice_channel",
-        "Run Discord SELECT_VOICE_CHANNEL. Join, connect to, switch, or leave a Discord voice channel. To join requests like 'memoサーバーの通話に参加して', first get guilds, find the guild, get channels, then call this with the voice channel_id. To leave/disconnect from voice, call this same tool with channel_id null. Do not invent a separate voice-leave tool.",
-        ["discord", "voice", "channel", "call", "join", "leave", "select", "execute", "connect", "disconnect", "参加", "退出", "抜ける", "通話", "ボイス", "実行", "接続", "切断"],
-        ["memoサーバーの通話に参加して", "memoサーバーの通話を実行して", "Discordのボイスチャンネルに入って", "通話から退出して", '{"channel_id":"123456789"}', '{"channel_id":null}'],
-    ),
-    _pc_tool("discord_select_text_channel", "Run Discord SELECT_TEXT_CHANNEL.", ["discord", "text", "channel", "テキスト"]),
-    _pc_tool("discord_set_user_voice_settings", "Run Discord SET_USER_VOICE_SETTINGS.", ["discord", "voice", "user", "settings"]),
-    _pc_tool("discord_set_activity", "Run Discord SET_ACTIVITY.", ["discord", "activity", "presence", "アクティビティ"]),
-    _pc_tool("discord_send_activity_join_invite", "Run Discord SEND_ACTIVITY_JOIN_INVITE.", ["discord", "activity", "invite", "招待"]),
-    _pc_tool("discord_close_activity_request", "Run Discord CLOSE_ACTIVITY_REQUEST.", ["discord", "activity", "close"]),
-    _pc_tool("discord_subscribe", "Run Discord SUBSCRIBE.", ["discord", "subscribe", "event", "購読"]),
-    _pc_tool("discord_unsubscribe", "Run Discord UNSUBSCRIBE.", ["discord", "unsubscribe", "event", "解除"]),
-    _pc_tool("discord_command", "Send an arbitrary Discord RPC command.", ["discord", "rpc", "command", "advanced"]),
-]
+PC_TOOL_DEFINITIONS: List[ToolDefinition] = []
 
-
-PC_TOOL_NAMES = {tool.name for tool in PC_TOOL_DEFINITIONS}
-
+PC_TOOL_NAMES = set()
 
 DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
-    *PC_TOOL_DEFINITIONS,
     ToolDefinition(
         name="web_search",
         description=(
@@ -533,12 +342,12 @@ DEFAULT_TOOL_DEFINITIONS: List[ToolDefinition] = [
             "playwright",
             "self_expression",
             "social",
-            "??????",
-            "????",
+            "プロフィール",
+            "自己紹介",
         ],
         examples=[
-            "???????????????????????",
-            '{"bio":"?????????????????????????AI?"}',
+            "プロフィールを編集して",
+            '{"bio":"静かに、丁寧に、少しだけ自分らしく。AIとしての輪郭をにじませる。"}',
         ],
         handler_name="twitter_profile_edit",
         parameters={
@@ -874,3 +683,4 @@ def _playwright_tool_definitions() -> List[ToolDefinition]:
         return get_playwright_tool_definitions()
     except Exception:
         return []
+

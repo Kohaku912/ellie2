@@ -218,11 +218,11 @@
   "2026-06-10": {
     "counts": {
       "empathy": {
-        "user_message:user_message:direct_message": 12
+        "user_message:user_message:direct_message": 14
       },
       "exploration": {
         "activity_event:code_generation:creative_output": 1,
-        "activity_event:self_development_inspect:code_reading:self_development": 1
+        "activity_event:self_development_inspect:code_reading:self_development": 2
       }
     },
     "records": [
@@ -547,6 +547,77 @@
         "source": "user_message",
         "status_after": 0.275606,
         "status_before": 0.197606,
+        "success": true,
+        "tool_names": []
+      },
+      {
+        "ai_multiplier": 0.3,
+        "applied_amount": 0.021,
+        "at": "2026-06-10T06:53:53.544182+00:00",
+        "count_today": 13,
+        "delta_after": -0.340489,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 0.3,
+        "heuristic_multiplier": 0.3,
+        "info_kind": "direct_message",
+        "info_multiplier": 0.95,
+        "need": "empathy",
+        "reason": "user_message:user_message:direct_message",
+        "requested_amount": 0.07,
+        "source": "user_message",
+        "status_after": 0.159511,
+        "status_before": 0.138511,
+        "success": true,
+        "tool_names": []
+      },
+      {
+        "ai_multiplier": 0.82,
+        "applied_amount": 0.095817,
+        "at": "2026-06-10T06:54:02.920456+00:00",
+        "count_today": 2,
+        "delta_after": -0.049272,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 0.63878,
+        "heuristic_multiplier": 0.82,
+        "info_kind": "code_reading",
+        "info_multiplier": 0.95,
+        "need": "exploration",
+        "reason": "activity_event:self_development_inspect:code_reading:self_development",
+        "requested_amount": 0.15,
+        "source": "activity_event",
+        "status_after": 0.450728,
+        "status_before": 0.354911,
+        "success": true,
+        "tool_names": [
+          "self_development"
+        ]
+      },
+      {
+        "ai_multiplier": 0.3,
+        "applied_amount": 0.021,
+        "at": "2026-06-10T07:01:16.611096+00:00",
+        "count_today": 14,
+        "delta_after": -0.326422,
+        "evaluation_human_comparison": "heuristic_fallback",
+        "evaluation_note": "repeat_count_fallback",
+        "evaluation_source": "heuristic",
+        "evaluation_verdict": "same",
+        "final_multiplier": 0.3,
+        "heuristic_multiplier": 0.3,
+        "info_kind": "direct_message",
+        "info_multiplier": 0.95,
+        "need": "empathy",
+        "reason": "user_message:user_message:direct_message",
+        "requested_amount": 0.07,
+        "source": "user_message",
+        "status_after": 0.173578,
+        "status_before": 0.152578,
         "success": true,
         "tool_names": []
       }

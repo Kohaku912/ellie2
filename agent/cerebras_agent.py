@@ -248,6 +248,11 @@ class ReActAgent:
 
         with AI_ACTIVITY_TRACKER.active("autonomous_cycle"):
             try:
+                self._send_autonomous_overlay(
+                    "自律実行を開始しました。必要なToolがあればこのまま進めます。",
+                    audit_trace_id=trace_id,
+                    audit_parent_id=trace_id,
+                )
                 memory_context = self._compose_ai_context()
                 result = self._run_autonomous_tool_loop(
                     memory_context,
@@ -317,6 +322,12 @@ class ReActAgent:
 
                 task_type = self.classify_task_type(instruction_text, extra_context)
                 if task_type == "heavy":
+                    if not update_social_needs:
+                        self._send_autonomous_overlay(
+                            "自己呼び出しを開始しました。必要な操作があればこのまま進めます。",
+                            audit_trace_id=trace_id,
+                            audit_parent_id=trace_id,
+                        )
                     runtime = AutonomyRuntime(lambda: self)
                     result = runtime.run_heavy_task_loop(
                         instruction_text,
@@ -619,7 +630,7 @@ class ReActAgent:
             "自律実行ではPC側の一般書込・削除・電源・プロセス終了・危険なshell操作は使わないでください。ただし self_development の write_file は Ellie2 配下だけを検証付きで編集する専用Toolなので、必要なら使って構いません。",
             "ユーザーに見せたい内容は、文章だけで終えず overlay_show で画面上に出してください。",
             "overlay_show は短い日本語テキストを見やすく表示する用途に使ってください。",
-            f"overlay_show / overlay_update は必ず正の clear_after_ms を入れてください。指定がなければ {DEFAULT_OVERLAY_CLEAR_AFTER_MS} を使ってください。",
+            f"overlay_prompt / overlay_show / overlay_update は必ず正の clear_after_ms を入れてください。指定がなければ {DEFAULT_OVERLAY_CLEAR_AFTER_MS} を使ってください。",
             "notify は具体的な結果・期限・次の行動があるときだけ使い、何かお手伝いできることがあれば教えてくださいのような空疎な文は出さないでください。",
         ]
         if hungry_drive:

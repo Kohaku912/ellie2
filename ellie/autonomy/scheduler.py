@@ -127,12 +127,12 @@ class AutonomousAgentScheduler:
     def _setup_jobs(self):
         self.scheduler.add_job(
             self.autonomous_task_loop,
-            CronTrigger(minute="*/5", timezone=agent_tz()),
-            id="five_minute_autonomous_tasks",
-            name="Five-minute autonomous cycle",
+            CronTrigger(minute="*/15", timezone=agent_tz()),
+            id="fifteen_minute_autonomous_tasks",
+            name="Fifteen-minute autonomous cycle",
             max_instances=1,
         )
-        logger.info("Scheduled autonomous cycle: every 5 minutes (Asia/Tokyo)")
+        logger.info("Scheduled autonomous cycle: every 15 minutes (Asia/Tokyo)")
 
         self.scheduler.add_job(
             self.daily_memory_reset,
@@ -155,14 +155,14 @@ class AutonomousAgentScheduler:
     def autonomous_task_loop(self):
         logger.info("=" * 60)
         if AI_ACTIVITY_TRACKER.is_active():
-            logger.info("Skipping minute autonomous cycle because AI is already running")
+            logger.info("Skipping fifteen-minute autonomous cycle because AI is already running")
             logger.info("=" * 60)
             return
 
-        logger.info("Starting five-minute autonomous cycle")
+        logger.info("Starting fifteen-minute autonomous cycle")
         logger.info("Time: %s", isoformat_local())
         audit_logger = get_audit_logger()
-        trace_id = audit_logger.new_id("minute-loop")
+        trace_id = audit_logger.new_id("fifteen-minute-loop")
 
         try:
             result = self.agent.run_autonomous_cycle(audit_trace_id=trace_id)
@@ -171,10 +171,10 @@ class AutonomousAgentScheduler:
             if result.get("answer"):
                 logger.info("Cycle answer: %s", str(result.get("answer"))[:300])
             self._log_execution(result)
-            logger.info("Five-minute autonomous cycle completed")
+            logger.info("Fifteen-minute autonomous cycle completed")
             logger.info("=" * 60)
         except Exception as error:
-            logger.error("Error in five-minute autonomous cycle: %s", error, exc_info=True)
+            logger.error("Error in fifteen-minute autonomous cycle: %s", error, exc_info=True)
             logger.info("=" * 60)
 
     def daily_memory_reset(self):

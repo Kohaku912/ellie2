@@ -164,7 +164,12 @@ Playwright MCP 経由でブラウザを直接操作します。
 - ブラウザ操作は playwright__browser_* ツールのみ使用（self_development禁止）
 - コード編集が必要な場合は Analyze → Plan → Execute → Verify の順で進める
 - 危険な操作やプロジェクト外編集は禁止
-- 完了時は DONE と理由を述べること"""
+- 完了時は DONE と理由を述べること
+
+## アカウント・メール情報
+- Gmail: k3320138@gmail.com（ブラウザにログイン済み、自由に使用可）
+- Webサービスへのアカウント登録は許可されています
+- メール確認が必要な場合、上記Gmailアドレスが使用可能"""
 
 
 def _convert_messages(messages: list) -> list[JsonDict]:

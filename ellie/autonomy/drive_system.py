@@ -107,6 +107,11 @@ class DriveSystem:
             normalized_tools = [str(tool).strip().casefold() for tool in (tool_names or []) if str(tool).strip()]
             tool_set = set(normalized_tools)
 
+            # Check if this is browser-based SNS activity (X/Twitter, social media)
+            is_browser_sns = bool(
+                tool_set & {"playwright__browser_navigate", "playwright__browser_snapshot", "playwright__browser_click", "playwright__browser_type"}
+            ) and any(kw in (text or "").casefold() for kw in ("twitter", "x.com", "x.c", "メッセージ", "dm", "投稿", "tweet", "social", "sns"))
+
             if normalized_event in {"creative_expression", "social_feedback"} or tool_set & {"blog_post"}:
                 self._recover("expression", 0.22, now=now)
                 self._recover("loneliness", 0.10 if success else 0.05, now=now)
@@ -119,6 +124,13 @@ class DriveSystem:
 
             if normalized_event in {"approval"} or tool_set & {"send_notification", "overlay_show"}:
                 self._recover("loneliness", 0.06 if success else 0.02, now=now)
+
+            # ── Browser-based SNS activity: boost multiple drives ──
+            if is_browser_sns:
+                self._recover("curiosity", 0.25, now=now)     # 新しい情報を見る
+                self._recover("expression", 0.20, now=now)    # 反応・表現
+                self._recover("loneliness", 0.20, now=now)    # 繋がり
+                self._recover("reflection", 0.15, now=now)    # 挑戦・反応
 
             if normalized_event in {"user_message"}:
                 self.note_user_message(text)

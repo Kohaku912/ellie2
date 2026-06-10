@@ -47,6 +47,10 @@ RECOVERY_REPEAT_MIN_MULTIPLIER = 0.30
 RECOVERY_REPEAT_MAX_MULTIPLIER = 1.20
 RECOVERY_EVAL_MAX_TOKENS = 220
 RECOVERY_EVAL_TEMPERATURE = 0.10
+SNS_BROWSER_EMPATHY_RECOVERY = 0.30        # SNS閲覧で共感回復
+SNS_BROWSER_APPROVAL_RECOVERY = 0.30       # SNS閲覧で承認回復
+SNS_BROWSER_EXPLORATION_RECOVERY = 0.25    # SNS閲覧で探求回復
+SNS_BROWSER_CHALLENGE_RECOVERY = 0.15      # SNS閲覧で挑戦回復
 
 RECOVERY_INFO_KIND_MULTIPLIERS: Dict[str, Dict[str, float]] = {
     "empathy": {
@@ -151,12 +155,24 @@ def normalize_recovery_reason(reason_key: str, source: str, tool_names: list[str
     return ":".join(parts) if parts else "unknown"
 
 
+def _is_browser_sns(normalized_tool: str, text: str) -> bool:
+    """Detect if a tool+text combo indicates browser-based SNS activity."""
+    return normalized_tool.startswith("playwright__") and any(
+        kw in text.casefold() for kw in ("twitter", "x.com", "x.c", "メッセージ", "dm", "投稿", "tweet", "social", "sns")
+    )
+
+
 def infer_recovery_info_kind(event_type: str, tool_name: str = "", result: Any | None = None, text: str = "", success: bool = True) -> str:
     """Infer a fine-grained info kind from a tool or activity event."""
     normalized_event = str(event_type or "").strip().casefold()
     normalized_tool = str(tool_name or "").strip().casefold()
     payload = result if isinstance(result, dict) else {}
     status = str(payload.get("status") or "").strip().casefold()
+    text_content = str(text or "")
+
+    # Browser SNS activity gets its own info kind
+    if _is_browser_sns(normalized_tool, text_content):
+        return "sns_browsing"
 
     if normalized_event in {"creative_expression"}:
         return "creative_output"
@@ -561,6 +577,31 @@ class SocialNeedsManager:
                     metadata=metadata,
                 )
             )
+
+        # ── Browser SNS activity: boost all social drives ──
+        is_browser_sns = bool(
+            set(normalized_tools) & {"playwright__browser_navigate", "playwright__browser_snapshot", "playwright__browser_click", "playwright__browser_type"}
+        ) and any(kw in (text or "").casefold() for kw in ("twitter", "x.com", "x.c", "メッセージ", "dm", "投稿", "tweet", "social", "sns"))
+        if is_browser_sns:
+            for need_key, amount in [
+                ("empathy", SNS_BROWSER_EMPATHY_RECOVERY),
+                ("approval", SNS_BROWSER_APPROVAL_RECOVERY),
+                ("exploration", SNS_BROWSER_EXPLORATION_RECOVERY),
+                ("challenge", SNS_BROWSER_CHALLENGE_RECOVERY),
+            ]:
+                recovery_events.append(
+                    RecoveryEvent(
+                        need_key=need_key,
+                        reason_key="sns_browser_activity",
+                        source="activity_event",
+                        requested_amount=amount,
+                        text=text,
+                        tool_names=normalized_tools,
+                        success=success,
+                        info_kind=info_kind or "sns_browsing",
+                        metadata=metadata,
+                    )
+                )
 
         if normalized_event == "self_development_success" and success:
             recovery_events.append(
